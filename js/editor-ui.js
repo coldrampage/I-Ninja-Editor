@@ -60,9 +60,20 @@ function applyEdits(){for(const lv of Viewer.D){const w=wadOf(lv.id);if(!w)conti
   const orig=lv.all0,P=PRJ.wads[w],del=new Set(P&&P.del||[]);for(const e of orig){if(e.base)put(e,{})}
   if(P)for(const[k,m]of Object.entries(P.mods)){const e=orig[+k];if(e&&e.i==+k)put(e,m)}
   lv.ents=orig.filter(e=>!del.has(e.i));
-  if(P)P.adds.forEach((a,k)=>{const s=srcEnt(a);if(!s)return;const B=base(s),e={...s,params:s.params.map(p=>({...p})),i:lv.nb+k,added:k+1,base:{...B}};
+  if(P)P.adds.forEach((a,k)=>{
+   // A prefab can come from any LCS in the loaded VOL, including a level that
+   // has not been opened in the 3D viewer. Analyse both ends before trying to
+   // attach script/register metadata to the newly added instance.
+   const srcLevel=lvOf(a.from.w);
+   if(typeof Viewer.analyseLevel==='function'){
+    Viewer.analyseLevel(srcLevel);
+    Viewer.analyseLevel(lv.id);
+   }
+   const s=srcEnt(a);if(!s)return;const B=base(s),e={...s,params:s.params.map(p=>({...p})),i:lv.nb+k,added:k+1,base:{...B}};
    put(e,{d:a.p.map((v,j)=>v-B.p[j]),dy:a.dy||0,dp:a.dp||0,dr:a.dr||0,regs:a.regs});lv.ents.push(e);
-   const sl=Viewer.SCR.levels[lvOf(a.from.w)];if(sl&&sl[s.i]&&Viewer.SCR.levels[lv.id])Viewer.SCR.levels[lv.id][e.i]=linkView(lv,P,sl[s.i],a,lvOf(a.from.w)===lv.id,true)});
+   const sl=Viewer.SCR.levels[srcLevel],tl=Viewer.SCR.levels[lv.id];
+   if(sl&&sl[s.i]&&tl)tl[e.i]=linkView(lv,P,sl[s.i],a,srcLevel===lv.id,true)
+  });
   // moved originals: links changed by hand
   const SL=Viewer.SCR.levels[lv.id];if(SL){lv.scr0=lv.scr0||{};for(const k in lv.scr0)SL[k]=lv.scr0[k];
    if(P)for(const[k,m]of Object.entries(P.mods)){const x=SL[k];if(!x||!((m.lk&&m.lk.length)||Object.keys(m.regs||{}).length))continue;if(!(k in lv.scr0))lv.scr0[k]=x;SL[k]=linkView(lv,P,x,m,true,false)}}}}
@@ -124,7 +135,7 @@ ground=entityEditor.ground;
 const oeu=edUpdate;edUpdate=function(){oeu();try{prefabManager.injectMoveControl()}catch(e){console.error(e)}};
 edUpdate();
 // objects added from another level take their script info from the object they were copied from
-const oscr=Viewer.scr;Viewer.scr=function(e){const x=oscr(e);if(x||!e.added||!Viewer.SCR)return x;const w=wadOf(e.L),a=w&&((PRJ.wads[w]||{}).adds||[])[e.added-1];if(!a)return null;const L2=lvOf(a.from.w),y=Viewer.SCR.levels[L2]&&Viewer.SCR.levels[L2][a.from.i];if(!y)return null;const c=Viewer.SCR.classes[y.k];return c?{c,r:y.r,l:y.l}:null};
+const oscr=Viewer.scr;Viewer.scr=function(e){const x=oscr(e);if(x||!e.added||!Viewer.SCR)return x;const w=wadOf(e.L),a=w&&((PRJ.wads[w]||{}).adds||[])[e.added-1];if(!a)return null;const L2=lvOf(a.from.w);if(typeof Viewer.analyseLevel==='function')Viewer.analyseLevel(L2);const y=Viewer.SCR.levels[L2]&&Viewer.SCR.levels[L2][a.from.i];if(!y)return null;const c=Viewer.SCR.classes[y.k];return c?{c,r:y.r,l:y.l}:null};
 
 })();
 

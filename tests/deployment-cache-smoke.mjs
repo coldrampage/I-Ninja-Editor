@@ -9,9 +9,9 @@ const bootstrap = read('js/bootstrap.js');
 const ui = read('js/editor-ui.js');
 const prefabs = read('js/prefabs.js');
 
-assert.match(html, /js\/bootstrap\.js\?v=step10a-prefab-import-fix/, 'index.html requests versioned bootstrap');
-assert.match(htmlAlias, /js\/bootstrap\.js\?v=step10a-prefab-import-fix/, 'consolidated HTML alias requests versioned bootstrap');
-assert.match(bootstrap, /import\(\'\.\/editor-ui\.js\?v=step10a-prefab-import-fix\'\)/, 'bootstrap imports a versioned coordinator');
+assert.match(html, /js\/bootstrap\.js\?v=step10b-live-script-refresh/, 'index.html requests versioned bootstrap');
+assert.match(htmlAlias, /js\/bootstrap\.js\?v=step10b-live-script-refresh/, 'consolidated HTML alias requests versioned bootstrap');
+assert.match(bootstrap, /import\(\'\.\/editor-ui\.js\?v=step10b-live-script-refresh\'\)/, 'bootstrap imports a versioned coordinator');
 assert.match(ui, /const\s+getWad\s*=\s*w\s*=>/, 'coordinator defines getWad');
 assert.match(ui, /installModelEditor\(\{[\s\S]{0,400}getWad/, 'getWad is injected into Models');
 assert.match(ui, /installScriptEditor\(\{[\s\S]{0,400}getWad/, 'getWad is injected into Scripts');

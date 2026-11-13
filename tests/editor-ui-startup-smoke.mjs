@@ -66,3 +66,12 @@ assert.match(source, /import\s*\{[^}]*\binstances\b[^}]*\bfixups\b[^}]*\}\s*from
 assert.match(volCore, /export\s*\{[^}]*\binstances\b[^}]*\bfixups\b[^}]*\}/s, 'vol-core exports instances and fixups');
 assert.match(source, /installPrefabManager\(\{[^}]*\binstances\s*,\s*fixups/s, 'prefab module receives the imported parser helpers');
 console.log('PASS: prefab parser helpers are imported, exported and injected');
+
+// Added prefabs must carry register/link script metadata immediately, even when
+// their source LCS was never opened in the 3D viewer before the copy operation.
+const viewer = fs.readFileSync(new URL('../js/viewer.js', import.meta.url), 'utf8');
+assert.match(viewer, /get\s+analyseLevel\(\)\s*\{\s*return\s+analyseLevel\s*;\s*\}/, 'Viewer exposes its existing on-demand level script analyser');
+assert.match(source, /Viewer\.analyseLevel\(srcLevel\)[\s\S]*?Viewer\.analyseLevel\(lv\.id\)/, 'project refresh analyses source and target script levels before attaching added-instance metadata');
+assert.match(source, /const\s+sl=Viewer\.SCR\.levels\[srcLevel\],tl=Viewer\.SCR\.levels\[lv\.id\]/, 'copied script/link metadata is written into the target level script table');
+assert.match(source, /if\(typeof Viewer\.analyseLevel==='function'\)Viewer\.analyseLevel\(L2\)/, 'added-entity script fallback can analyse an unloaded source level on demand');
+console.log('PASS: live copied-entity register and link metadata refresh');

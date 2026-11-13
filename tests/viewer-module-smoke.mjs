@@ -34,11 +34,12 @@ const viewer = await import('../js/viewer.js');
 for(const name of forbiddenCoreGlobals){
   if(Object.prototype.hasOwnProperty.call(globalThis,name))throw new Error('viewer leaked core global: '+name);
 }
-const globalNames=['$','D','SCR','V3','addVolumes','all','buildEnts','camera','col','cv','drag','esc','files','fwd','ggame','goto_','inspect','labels','levels','loadJson','mdown','mz','nearest','need','openClass','openFiles','pick','pitch','refresh','regTxt','root','scr','scrDetail','scrIx','scrSel','scrVar','sel','show','shown','tab','wrap','yaw'];
+const globalNames=['$','D','SCR','V3','addVolumes','analyseLevel','all','buildEnts','camera','col','cv','drag','esc','files','fwd','ggame','goto_','inspect','labels','levels','loadJson','mdown','mz','nearest','need','openClass','openFiles','pick','pitch','refresh','regTxt','root','scr','scrDetail','scrIx','scrSel','scrVar','sel','show','shown','tab','wrap','yaw'];
 const leaked=globalNames.filter(k=>Object.prototype.hasOwnProperty.call(globalThis,k));
 if(leaked.length)throw new Error('viewer published global aliases: '+leaked.join(', '));
 const api=viewer.Viewer;
 if(!api||typeof api.$!=='function'||!api.camera||!api.root)throw new Error('Viewer API is incomplete');
+if(typeof api.analyseLevel!=='function')throw new Error('Viewer API does not expose on-demand script analysis');
 const originalFiles=api.files,originalSel=api.sel,originalRefresh=api.refresh;
 api.files=[{name:'api-check'}];api.sel={test:true};api.refresh=()=>42;
 if(api.files[0].name!=='api-check')throw new Error('Viewer.files setter failed');
@@ -66,6 +67,7 @@ if(api.sel!==null)throw new Error('inspector close action failed');
 api.all=originalAll;
 console.log('PASS viewer imports core APIs without global parser/editor/assembler bindings');
 console.log('PASS Viewer API live state and function accessors');
+console.log('PASS Viewer exposes on-demand script analysis for prefab source levels');
 console.log('PASS no legacy viewer globals published on globalThis');
 console.log('PASS entity overlay refresh callback');
 console.log('PASS delegated inspector close action');

@@ -309,6 +309,7 @@ const viewerApiBindings = {
   get SCR() { return SCR; }, set SCR(value) { SCR = value; },
   get V3() { return V3; },
   get addVolumes() { return addVolumes; },
+  get analyseLevel() { return analyseLevel; },
   get all() { return all; }, set all(value) { all = value; },
   get buildEnts() { return buildEnts; }, set buildEnts(value) { buildEnts = value; },
   get camera() { return camera; },
