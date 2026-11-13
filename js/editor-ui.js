@@ -30,6 +30,9 @@ Viewer.$('ctl').insertBefore(ui,Viewer.$('ctl').firstChild);
 Viewer.$('ed_open').onclick=()=>Viewer.$('ed_pf').click();
 const r3=x=>Math.round(x*1000)/1000,wadOf=L=>Viewer.levels[L]&&Viewer.levels[L].LCS?Viewer.levels[L].LCS.name:null,lvOf=w=>w.replace(/\.LCS$/i,'');
 const isVol=()=>Viewer.files.some(f=>f.vol&&f.buf&&f.buf.byteLength>16&&new DataView(f.buf).getUint32(0,true)===0x544c4f56);
+// Cached parsed LCS access used by prefab/resource checks, model overlays, script editing,
+// entity editing and project export. This was accidentally dropped during the Step 9 split.
+const getWad=w=>{if(WC[w])return WC[w];const f=Viewer.files.find(x=>x.name===w);if(!f)return null;const[A,B]=readWad(f.buf,f);return WC[w]={A,B,cls:new Set(siWad(A,B).classes.map(c=>c.name))}};
 const vbase=n=>String(n||'').replace(/\.(vol|avl)$/i,'').toLowerCase(),volOf=w=>{const f=Viewer.files.find(x=>x.name===w);return f&&f.vol},loadedVols=()=>[...new Set(Viewer.files.filter(f=>f.vol).map(f=>f.vol))];
 const avlOk=v=>!!v&&!!AVLS[vbase(v)];
 // the .avl is only read when a patched one has to be built
