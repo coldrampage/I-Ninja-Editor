@@ -20,7 +20,7 @@ const V3=THREE.Vector3,fwd=()=>{const c=Math.cos(pitch);return new V3(-Math.sin(
 const gworld=p=>new V3(p[0],p[1],mz*p[2]),ggame=v=>[v.x,v.y,mz*v.z];
 function setCam(){camera.rotation.set(pitch,yaw,0);need=true}
 function rs(){renderer.setPixelRatio(devicePixelRatio);renderer.setSize(innerWidth,innerHeight);lc.width=innerWidth;lc.height=innerHeight;camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();need=true}
-onresize=rs;
+window.onresize=rs;
 
 function clearScene(){root.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){for(const m of[].concat(o.material)){if(m.map)m.map.dispose();m.dispose()}}});
  while(root.children.length)root.remove(root.children[0]);mats=[];collMat=null;entGroup=null}
@@ -130,7 +130,7 @@ async function openFiles(fs){const js=fs.filter(f=>/\.json$/i.test(f.name));for(
   else{const ents=xboxInstances(u8);D.push({id:f.name,ents,bb:null});msg.push(f.name+' ('+i.name+', wad v'+i.ver+'): '+ents.length+' instances, '+ents.filter(e=>e.b).length+' boxes')}}catch(e){msg.push(f.name+': '+e)}}
  $('st').textContent=msg.join('\n');D.forEach(l=>buildLevel(l.id,l));refresh();fit()}
 $('file').onchange=e=>openFiles([...e.target.files]);
-ondragover=e=>e.preventDefault();ondrop=e=>{e.preventDefault();dropFiles(e.dataTransfer).then(f=>openFiles(f))};
+window.ondragover=e=>e.preventDefault();window.ondrop=e=>{e.preventDefault();dropFiles(e.dataTransfer).then(f=>openFiles(f))};
 $('dirbtn').onclick=()=>$('dirpick').click();$('dirpick').onchange=e=>{const f=[...e.target.files].filter(x=>WANT.test(x.name));e.target.value='';if(!f.length){$('st').textContent='no .vol / .avl files in that folder';return}openFiles(f)};
 $('load').onclick=async()=>{const ids=[...document.querySelectorAll('#lv input:checked')].map(i=>i.dataset.l);if(!ids.length)return;
  clearScene();D=[];const info=[];
@@ -237,7 +237,7 @@ addEventListener('keydown',e=>{if(isField(e.target))return;keys[e.code]=true;
 addEventListener('keyup',e=>{keys[e.code]=false});addEventListener('blur',()=>{for(const k in keys)keys[k]=false});
 cv.addEventListener('contextmenu',e=>e.preventDefault());
 cv.onmousedown=e=>{drag={x:e.clientX,y:e.clientY,b:e.button};mdown={x:e.clientX,y:e.clientY,b:e.button}};
-onmouseup=e=>{if(mdown&&mdown.b==0&&Math.hypot(e.clientX-mdown.x,e.clientY-mdown.y)<4&&e.target===cv){const q=nearest(e.clientX,e.clientY);sel=q||null;inspect(sel);need=true}mdown=null;drag=null};
+window.onmouseup=e=>{if(mdown&&mdown.b==0&&Math.hypot(e.clientX-mdown.x,e.clientY-mdown.y)<4&&e.target===cv){const q=nearest(e.clientX,e.clientY);sel=q||null;inspect(sel);need=true}mdown=null;drag=null};
 cv.onwheel=e=>{e.preventDefault();const v=+$('sp').value+(e.deltaY<0?.08:-.08);$('sp').value=Math.max(-1,Math.min(3,v));applyView()};
 function project(p){const v=gworld(p).project(camera);return{x:(v.x+1)/2*innerWidth,y:(1-v.y)/2*innerHeight,z:v.z}}
 function nearest(mx,my){let best=null,bd=14;for(const q of all){if(!shown(q))continue;const s=project(q.p);if(s.z>1||s.z<-1)continue;const d=Math.hypot(s.x-mx,s.y-my);if(d<bd){bd=d;best=q}}return best}
@@ -282,3 +282,60 @@ function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;
  if(need){need=false;camera.updateMatrixWorld();renderer.render(scene,camera);labels();tipUpdate()}
  requestAnimationFrame(tick)}
 rs();camera.position.set(0,50,100);setCam();requestAnimationFrame(tick);
+
+// Temporary compatibility surface for editor-ui.js and existing inline inspector actions.
+// These accessors keep the module's live bindings authoritative while allowing the legacy
+// script to read and override the small set of viewer symbols it historically shared.
+export function exposeViewerGlobals(target = window) {
+  const bindings = {
+    get $() { return $; },
+    get D() { return D; }, set D(value) { D = value; },
+    get SCR() { return SCR; }, set SCR(value) { SCR = value; },
+    get V3() { return V3; },
+    get addVolumes() { return addVolumes; },
+    get all() { return all; }, set all(value) { all = value; },
+    get buildEnts() { return buildEnts; }, set buildEnts(value) { buildEnts = value; },
+    get camera() { return camera; },
+    get col() { return col; },
+    get cv() { return cv; },
+    get drag() { return drag; }, set drag(value) { drag = value; },
+    get esc() { return esc; },
+    get files() { return files; }, set files(value) { files = value; },
+    get fwd() { return fwd; },
+    get ggame() { return ggame; },
+    get goto_() { return goto_; },
+    get inspect() { return inspect; }, set inspect(value) { inspect = value; },
+    get labels() { return labels; },
+    get levels() { return levels; }, set levels(value) { levels = value; },
+    get loadJson() { return loadJson; }, set loadJson(value) { loadJson = value; },
+    get mdown() { return mdown; }, set mdown(value) { mdown = value; },
+    get mz() { return mz; }, set mz(value) { mz = value; },
+    get nearest() { return nearest; },
+    get need() { return need; }, set need(value) { need = value; },
+    get openClass() { return openClass; },
+    get openFiles() { return openFiles; }, set openFiles(value) { openFiles = value; },
+    get pick() { return pick; },
+    get pitch() { return pitch; }, set pitch(value) { pitch = value; },
+    get refresh() { return refresh; }, set refresh(value) { refresh = value; },
+    get regTxt() { return regTxt; },
+    get root() { return root; },
+    get scr() { return scr; }, set scr(value) { scr = value; },
+    get scrDetail() { return scrDetail; }, set scrDetail(value) { scrDetail = value; },
+    get scrIx() { return scrIx; }, set scrIx(value) { scrIx = value; },
+    get scrSel() { return scrSel; }, set scrSel(value) { scrSel = value; },
+    get scrVar() { return scrVar; }, set scrVar(value) { scrVar = value; },
+    get sel() { return sel; }, set sel(value) { sel = value; },
+    get show() { return show; }, set show(value) { show = value; },
+    get shown() { return shown; },
+    get tab() { return tab; }, set tab(value) { tab = value; },
+    get wrap() { return wrap; },
+    get yaw() { return yaw; }, set yaw(value) { yaw = value; },
+  };
+
+  for (const key of Object.keys(bindings)) {
+    const descriptor = Object.getOwnPropertyDescriptor(bindings, key);
+    Object.defineProperty(target, key, { ...descriptor, configurable: true });
+  }
+  return target;
+}
+
