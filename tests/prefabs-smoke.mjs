@@ -9,6 +9,7 @@ function element(id) {
     parentNode: { after() {} },
     insertAdjacentHTML(_where, html) { this.insertedHTML = (this.insertedHTML || '') + html; },
     querySelectorAll() { return []; },
+    click() {},
   });
   return elements.get(id);
 }
@@ -18,7 +19,8 @@ globalThis.innerWidth = 1000;
 globalThis.innerHeight = 700;
 
 const source = { i: 0, n: 'TestPrefab', p: [1, 2, 3], params: [] };
-const level = { id: '10-00', all0: [source], ents: [source], nb: 1 };
+const linkedSource = { i: 1, n: 'LinkedChild', p: [10, 4, 13], params: [] };
+const level = { id: '10-00', all0: [source, linkedSource], ents: [source, linkedSource], nb: 2 };
 const project = {
   app: 'ininja-editor', v: 1,
   wads: { '10-00.LCS': { adds: [{ id: 4 }], mods: {}, del: [], classes: [] } }
@@ -41,21 +43,22 @@ for (let i = 0; i < 2; i++) {
 wadView.setUint16(lnk, 0, true); wadView.setUint16(lnk + 2, 0, true);
 wadView.setUint16(lnk + 4, 1, true); wadView.setUint16(lnk + 6, 0, true);
 let linkMode = false;
+let selectedRecord = null;
 
 const Viewer = {
-  D: [level], files: [], sel: null, all: [],
+  D: [level], files: [{name:'10-00.LCS', buf:new ArrayBuffer(1)}], sel: null, all: [],
   $: element,
-  refresh() {}, inspect() {},
+  refresh() {}, inspect() {}, need: false,
   ggame: p => p,
   camera: { position: { clone() { return this; }, addScaledVector() { return this; } } },
   fwd: () => ({}),
 };
 const manager = installPrefabManager({
   Viewer,
-  EC: { prefabCheck: () => null },
+  EC: { prefabCheck: () => null, fnv: bytes => 'hash-' + bytes.length },
   getProject: () => project,
   wadOf: id => id + '.LCS',
-  getWad: () => ({ cls: new Set(['TestPrefab']), A: wadA, B: wadB }),
+  getWad: () => ({ cls: new Set(['TestPrefab', 'LinkedChild']), A: wadA, B: wadB }),
   readWad: () => [wadA, wadB],
   instances: () => [], fixups: () => linkMode ? { [0x8000010e]: [h] } : {}, siWad: () => ({ classes: [] }),
   volOf: () => '10.vol', avlOk: () => false, vbase: s => String(s).replace(/\.(vol|avl)$/i, ''),
@@ -63,7 +66,7 @@ const manager = installPrefabManager({
   r3: x => Math.round(x * 1000) / 1000,
   sndPlan: () => undefined, summary() {},
   getGround: () => () => [0, 0, 0],
-  getEntityRecord: () => null, updateEntity() {},
+  getEntityRecord: () => selectedRecord, updateEntity() {},
 });
 
 assert.equal(typeof element('ed_lv').onfocus, 'function', 'prefab target selector receives its discovery handler');
@@ -103,3 +106,93 @@ console.log('PASS prefab module resolves source entities and class names');
 console.log('PASS prefab module creates project additions and allocates stable IDs');
 console.log('PASS prefab module deep-copies linked children and rewires both link directions');
 console.log('PASS prefab module exposes dependency, link-cleanup and cache services');
+
+
+// Save a favourite from the selected entity. Its project-wide recipe retains the
+// source reference, root register/rotation overrides and linked-child preference.
+linkMode = true;
+Viewer.sel = { L: '10-00', i: 0, p: [1, 2, 3], n: 'TestPrefab' };
+selectedRecord = {
+  e: source, w: '10-00.LCS',
+  m: { dy: 256, dp: 16, dr: -8, regs: { 1: 12345 }, lk: [] }
+};
+element('ed_fav_name').value = 'Shielded Ranx';
+element('ed_fav_category').value = 'Generators';
+element('ed_fav_links').checked = true;
+element('ed_lv').value = '10-00';
+element('ed_fav_save').onclick();
+assert.equal(project.prefabs.length, 1, 'saving a favourite appends it to the project-wide library');
+assert.equal(project.prefabs[0].name, 'Shielded Ranx');
+assert.equal(project.prefabs[0].category, 'Generators');
+assert.deepEqual(project.prefabs[0].from, { w: '10-00.LCS', i: 0 });
+assert.equal(project.prefabs[0].includeLinked, true);
+assert.equal(project.prefabs[0].linkedCount, 1, 'favourite records the linked-child count');
+assert.equal(project.prefabs[0].dy, 256);
+assert.equal(project.prefabs[0].regs[1], 12345);
+assert.deepEqual(project.prefabs[0].fp, { A: 'hash-1024', B: 'hash-1' }, 'favourite stores source fingerprints');
+
+// Place from the saved library and verify it uses the existing deep-link copier,
+// retaining root overrides and re-linking the copied child to the new root.
+element('ed_fav_list').value = String(project.prefabs[0].id);
+element('ed_fav_place').onclick();
+const placed = project.wads['10-00.LCS'].adds.slice(-2);
+assert.equal(placed.length, 2, 'placing a favourite copies its linked child');
+assert.equal(placed[0].dy, 256, 'favourite root rotation override is applied');
+assert.equal(placed[0].regs[1], 12345, 'favourite root register override is applied');
+assert.deepEqual(placed[0].lk, [[0, placed[1].id]], 'placed favourite reconnects root to its copied child');
+assert.deepEqual(placed[1].lk, [[0, placed[0].id]], 'placed favourite reconnects child back to root');
+
+// The same project-wide favourite can be placed in another compatible level.
+const otherLevel = { id: '10-01', all0: [], ents: [], nb: 0 };
+Viewer.D.push(otherLevel);
+element('ed_lv').value = '10-01';
+element('ed_fav_list').value = String(project.prefabs[0].id);
+element('ed_fav_place').onclick();
+const crossLevel = project.wads['10-01.LCS'].adds;
+assert.equal(crossLevel.length, 2, 'favourite can be placed in another loaded level');
+assert.deepEqual(crossLevel[0].lk, [[0, crossLevel[1].id]], 'cross-level favourite keeps its root-to-child link');
+assert.equal(crossLevel[0].from.w, '10-00.LCS', 'cross-level favourite retains its original source reference');
+
+// Import merges unique source/name recipes and ignores duplicate entries.
+const imported = {
+  app: 'ininja-prefab-library', v: 1,
+  prefabs: [
+    { name: 'Shielded Ranx', from: { w: '10-00.LCS', i: 0 } },
+    { name: 'Beach Switch', category: 'Switches', sourceName: 'Switch', from: { w: '10-02.LCS', i: 9 }, regs: { 2: 77 } }
+  ]
+};
+const favFile = element('ed_fav_file');
+favFile.files = [{ name: 'ininja-prefabs.json', text: async () => JSON.stringify(imported) }];
+await favFile.onchange({ target: favFile });
+assert.equal(project.prefabs.length, 2, 'library import skips duplicate source/name entries');
+assert.equal(project.prefabs[1].name, 'Beach Switch');
+assert.equal(project.prefabs[1].regs[2], 77);
+
+// Export produces a portable library JSON without embedding game binaries.
+let exportedLibraryText = '';
+globalThis.Blob = class { constructor(parts) { exportedLibraryText = parts.join(''); } };
+globalThis.URL = { createObjectURL: () => 'blob:favourites', revokeObjectURL() {} };
+globalThis.setTimeout = callback => { callback(); return 0; };
+element('ed_fav_export').onclick();
+const exportedLibrary = JSON.parse(exportedLibraryText);
+assert.equal(exportedLibrary.app, 'ininja-prefab-library');
+assert.equal(exportedLibrary.prefabs.length, 2);
+
+// Removing the selected item only removes the library entry, not placed project objects.
+element('ed_fav_list').value = String(project.prefabs[1].id);
+element('ed_fav_delete').onclick();
+assert.equal(project.prefabs.length, 1, 'remove deletes selected favourite');
+assert.equal(project.wads['10-00.LCS'].adds.length >= 4, true, 'deleting a favourite leaves placed instances intact');
+linkMode = false;
+
+console.log('PASS prefab favourites save root overrides and source fingerprints');
+console.log('PASS prefab favourites place linked copies with rewired relationships');
+console.log('PASS prefab library import deduplicates and removal preserves placed objects');
+
+
+project.prefabs.push(null, { id: 999, name: 'broken entry' });
+manager.renderFavorites(false);
+assert.equal(project.prefabs.length, 1, 'malformed project favourites are ignored rather than breaking the library UI');
+console.log('PASS malformed project favourite entries are filtered safely');
+
+console.log('PASS prefab library export writes portable JSON recipes');

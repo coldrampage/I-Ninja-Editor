@@ -5,13 +5,14 @@ export function installProjectManager({
   getProject, setProject,
   isVol, getWad, volOf, getVolName, loadedVols,
   buildScriptWadsFp, sndPlan, avlLoad, avlOk, vbase, getAvl,
-  sourceClass, unzero
+  sourceClass, unzero, onProjectLoaded = () => {}
 }) {
   const $ = id => Viewer.$(id);
 
   function normalizeProject(j) {
     j.models = j.models || {};
     j.scripts = j.scripts || {};
+    j.prefabs = Array.isArray(j.prefabs) ? j.prefabs : [];
     j.wads = j.wads || {};
     for (const w in j.wads) {
       j.wads[w].mods = j.wads[w].mods || {};
@@ -28,6 +29,7 @@ export function installProjectManager({
       const j = JSON.parse(await f.text());
       if (j.app !== 'ininja-editor') throw 'not an editor project';
       setProject(normalizeProject(j));
+      onProjectLoaded();
       Viewer.refresh();
       $('ed_sum').textContent = 'project loaded: ' + f.name + ' (apply to levels you load later by loading them again)';
     } catch (x) {
@@ -43,6 +45,7 @@ export function installProjectManager({
     try { j = JSON.parse(await f.text()); } catch (e) {}
     if (j && j.app === 'ininja-editor') {
       setProject(normalizeProject(j));
+      onProjectLoaded();
       if (Viewer.D.length) Viewer.refresh();
       $('st').textContent = 'editor project loaded (' + f.name + '); load its levels to see the edits';
       return;
@@ -98,8 +101,8 @@ export function installProjectManager({
       for (const f of Viewer.files) if (f.vol) vv[f.vol] = f.buf.byteLength;
       PRJ.vols = vv;
       const scr = buildScriptWadsFp();
-      dl([JSON.stringify({app:'ininja-editor', v:1, vols:PRJ.vols, models:PRJ.models || {}, wads, scripts:scr}, null, 1)], 'ininja-project.json', 'application/json');
-      $('ed_sum').textContent = 'project saved: ' + Object.keys(wads).length + ' level(s) with instance edits, ' + Object.keys(scr).length + ' with code edits (holds only your edits, no game data)';
+      dl([JSON.stringify({app:'ininja-editor', v:1, vols:PRJ.vols, models:PRJ.models || {}, prefabs:PRJ.prefabs || [], wads, scripts:scr}, null, 1)], 'ininja-project.json', 'application/json');
+      $('ed_sum').textContent = 'project saved: ' + Object.keys(wads).length + ' level(s) with instance edits, ' + Object.keys(scr).length + ' with code edits, ' + (PRJ.prefabs || []).length + ' prefab favourite(s) (holds only your edits, no game data)';
     } catch (x) {
       $('ed_sum').textContent = 'save failed: ' + x;
     }

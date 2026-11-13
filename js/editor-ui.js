@@ -8,9 +8,9 @@ import { IA } from './strat-assembler.js';
 import { Viewer } from './viewer.js';
 import { installModelEditor } from './models-panel.js';
 import { installScriptEditor } from './script-editor.js';
-import { installProjectManager } from './project-manager.js';
+import { installProjectManager } from './project-manager.js?v=step11-prefab-favourites';
 import { installEntityEditor } from './entity-editor.js';
-import { installPrefabManager } from './prefabs.js';
+import { installPrefabManager } from './prefabs.js?v=step11-prefab-favourites';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -18,7 +18,7 @@ import { installPrefabManager } from './prefabs.js';
 
 // ---- editor UI: edits live in a project (json); the game files are never modified, a patched copy is built on demand
 (()=>{
-let PRJ={app:'ininja-editor',v:1,vol:null,wads:{}},volName='vol',AVLS={},WC={},inR=0;
+let PRJ={app:'ininja-editor',v:1,vol:null,wads:{},prefabs:[]},volName='vol',AVLS={},WC={},inR=0;
 let resetModelCaches=()=>{},buildScriptWadsFp=()=>({}),edUpdate=()=>{},rec=()=>null,ground=()=>null,srcEnt=()=>null;
 
 // Create the editor panel before installing feature handlers. The entity editor
@@ -26,7 +26,16 @@ let resetModelCaches=()=>{},buildScriptWadsFp=()=>({}),edUpdate=()=>{},rec=()=>n
 // project/prefab controls; prefabs.js attaches its own handlers after insertion.
 const ui=document.createElement('div');ui.id='ed';
 ui.innerHTML='<hr><b>Editor</b> <span class=h>edits go in a project file; game files are never touched</span><details style="margin:3px 0"><summary class=h>current scope</summary><div class=h><b>Rotation:</b> yaw, pitch and roll are editable. Yaw turns about world up; pitch (local X) and roll (local Z) are applied on top of the original orientation and shown as changes from it.<br><b>No LCM edits:</b> only .LCS strat data can be edited. The project format is per-wad, so LCM edits can slot in later.</div></details><div style="margin:3px 0"><button id=ed_open>open project</button> <button id=ed_save>save project</button> <button id=ed_patch>build patched .vol</button> <button id=ed_md>models</button> <button id=ed_stb>copier self-test</button></div><input type=file id=ed_pf style=display:none accept=.json><div id=ed_sum class=h></div><div id=ed_rm class=h></div><div id=ed_sel class=h>click an entity to edit it</div>'
-  +'<div style="margin-top:4px"><span class=h>add prefab to</span> <select id=ed_lv style="max-width:90px"></select> <select id=ed_cl style="max-width:170px"></select> <button id=ed_add>add</button><br><label class=h title="A spawner links to the objects it spawns. Tick this to copy those objects too, as separate objects that link to each other, so the copy spawns its own set."><input type=checkbox id=ed_deep> also copy the objects it links to</label></div>';
+  +'<div style="margin-top:4px"><span class=h>add prefab to</span> <select id=ed_lv style="max-width:90px"></select> <select id=ed_cl style="max-width:170px"></select> <button id=ed_add>add</button><br><label class=h title="A spawner links to the objects it spawns. Tick this to copy those objects too, as separate objects that link to each other, so the copy spawns its own set."><input type=checkbox id=ed_deep> also copy the objects it links to</label></div>'
+  +'<details id=ed_fav_panel style="margin-top:5px"><summary class=h>Prefab favourites <span id=ed_fav_count>(0)</span></summary>'
+  +'<div class=h>Project-wide library. Favourites reference source game assets; the source VOL must be loaded to place them.</div>'
+  +'<div style="margin:3px 0"><input id=ed_fav_name type=text placeholder="Favourite name" maxlength=80 style="width:125px"> <input id=ed_fav_category type=text placeholder="Category" maxlength=32 style="width:85px"></div>'
+  +'<label class=h title="Copy the source instance\'s linked children too and reconnect links between the copies."><input type=checkbox id=ed_fav_links checked> include linked children</label>'
+  +'<button id=ed_fav_save>★ Save selected</button>'
+  +'<select id=ed_fav_list size=5 style="display:block;width:100%;max-width:240px;margin:3px 0"></select>'
+  +'<div><button id=ed_fav_place>place favourite</button> <button id=ed_fav_delete>remove</button></div>'
+  +'<div style="margin-top:3px"><button id=ed_fav_export>export library</button> <button id=ed_fav_import>import library</button><input id=ed_fav_file type=file accept=.json style=display:none></div>'
+  +'<div id=ed_fav_info class=h style="white-space:pre-wrap;margin-top:3px"></div></details>';
 Viewer.$('ctl').insertBefore(ui,Viewer.$('ctl').firstChild);
 Viewer.$('ed_open').onclick=()=>Viewer.$('ed_pf').click();
 const r3=x=>Math.round(x*1000)/1000,wadOf=L=>Viewer.levels[L]&&Viewer.levels[L].LCS?Viewer.levels[L].LCS.name:null,lvOf=w=>w.replace(/\.LCS$/i,'');
@@ -51,7 +60,7 @@ const unzero=m=>m.d.some(x=>x)||m.dy||m.dp||m.dr||Object.keys(m.regs).length||(m
 // Shared project status and removed-entity restoration UI. These stayed in the
 // coordinator when entity editing moved into entity-editor.js because Models
 // and Entity Editor both use them.
-function summary(){let m=0,a=0,n=0,r=0;for(const w in PRJ.wads){const x=Object.values(PRJ.wads[w].mods).filter(unzero).length,y=PRJ.wads[w].adds.length,z=(PRJ.wads[w].del||[]).length;m+=x;a+=y;r+=z;if(x||y||z)n++}Viewer.$('ed_sum').textContent=m+' moved/edited, '+a+' added, '+r+' removed in '+n+' level(s)'+(Object.keys(PRJ.vols||{}).length>1?' ['+Object.keys(PRJ.vols).join(', ')+']':'')}
+function summary(){let m=0,a=0,n=0,r=0;for(const w in PRJ.wads){const x=Object.values(PRJ.wads[w].mods).filter(unzero).length,y=PRJ.wads[w].adds.length,z=(PRJ.wads[w].del||[]).length;m+=x;a+=y;r+=z;if(x||y||z)n++}Viewer.$('ed_sum').textContent=m+' moved/edited, '+a+' added, '+r+' removed in '+n+' level(s)'+(PRJ.prefabs&&PRJ.prefabs.length?', '+PRJ.prefabs.length+' prefab favourite(s)':'')+(Object.keys(PRJ.vols||{}).length>1?' ['+Object.keys(PRJ.vols).join(', ')+']':'')}
 function rmList(){const out=[];for(const lv of Viewer.D){const w=wadOf(lv.id),P=w&&PRJ.wads[w];if(!P||!lv.all0)continue;for(const i of P.del||[])if(lv.all0[i])out.push([w,i,lv.all0[i].n,lv.id])}
  Viewer.$('ed_rm').innerHTML=out.length?'removed: '+out.slice(0,12).map(([w,i,n,L])=>L+'#'+i+' '+Viewer.esc(n)+' <a href=# data-w="'+w+'" data-i='+i+'>restore</a>').join(' &middot; ')+(out.length>12?' &hellip;':''):'';
  Viewer.$('ed_rm').querySelectorAll('a').forEach(a=>a.onclick=e=>{e.preventDefault();const P=PRJ.wads[a.dataset.w];P.del=P.del.filter(x=>x!=+a.dataset.i);Viewer.refresh()})}
@@ -123,7 +132,7 @@ Viewer.$('ed_stb').onclick=async()=>{try{if(!isVol())throw'load a .vol first';co
 buildScriptWadsFp=installScriptEditor({Viewer,IA,EC,getWad,wadOf,isVol,volOf,getVolName:()=>volName,getProject:()=>PRJ}).scriptWadsFp;
 
 // Project open/save and VOL/AVL patching are handled by their own module.
-const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setProject:j=>{PRJ=j},isVol,getWad,volOf,getVolName:()=>volName,loadedVols,buildScriptWadsFp,sndPlan,avlLoad,avlOk,vbase,getAvl:v=>AVLS[vbase(v)],sourceClass:prefabManager.sourceClass,unzero});
+const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setProject:j=>{PRJ=j},isVol,getWad,volOf,getVolName:()=>volName,loadedVols,buildScriptWadsFp,sndPlan,avlLoad,avlOk,vbase,getAvl:v=>AVLS[vbase(v)],sourceClass:prefabManager.sourceClass,unzero,onProjectLoaded:()=>prefabManager.renderFavorites(false)});
 
 const entityEditor=installEntityEditor({
   Viewer,EC,getProject:()=>PRJ,wadOf,getWad,WS,base,put,unzero,srcEnt,

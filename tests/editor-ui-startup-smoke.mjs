@@ -11,7 +11,9 @@ assert.notEqual(panelInsert, -1, 'editor panel is inserted into #ctl');
 
 const requiredIds = [
   'ed_open', 'ed_save', 'ed_patch', 'ed_md', 'ed_stb', 'ed_pf',
-  'ed_sum', 'ed_rm', 'ed_sel', 'ed_lv', 'ed_cl', 'ed_add', 'ed_deep'
+  'ed_sum', 'ed_rm', 'ed_sel', 'ed_lv', 'ed_cl', 'ed_add', 'ed_deep',
+  'ed_fav_name', 'ed_fav_category', 'ed_fav_links', 'ed_fav_save', 'ed_fav_list',
+  'ed_fav_place', 'ed_fav_delete', 'ed_fav_export', 'ed_fav_import', 'ed_fav_file', 'ed_fav_info'
 ];
 const markupStart = source.indexOf("const ui=document.createElement('div');ui.id='ed'");
 assert.notEqual(markupStart, -1, 'editor panel markup is created');

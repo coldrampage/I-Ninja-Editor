@@ -193,6 +193,273 @@ export function installPrefabManager({
     Viewer.need = true;
   };
 
+
+  // ---- project-wide prefab favourites
+  // A favourite is a reusable recipe pointing at a source game instance. It stores
+  // root transform/register overrides separately from the source binary data; linked
+  // children are reconstructed by the same link-aware copy path used by normal prefabs.
+  function library() {
+    const project = getProject();
+    if (!Array.isArray(project.prefabs)) project.prefabs = [];
+    // Project JSON can be hand-edited or imported from an older experimental
+    // build. Keep malformed entries from breaking the editor's startup UI.
+    const valid = project.prefabs.filter(f => f && typeof f === 'object'
+      && f.from && typeof f.from.w === 'string'
+      && Number.isInteger(Number(f.from.i)) && Number(f.from.i) >= 0);
+    if (valid.length !== project.prefabs.length) {
+      project.prefabs.splice(0, project.prefabs.length, ...valid);
+    }
+    return project.prefabs;
+  }
+
+  const safeText = (value, max) => String(value == null ? '' : value).trim().slice(0, max);
+  const escapeHtml = value => String(value == null ? '' : value).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[c]);
+
+  function currentFavorite() {
+    const id = Viewer.$('ed_fav_list').value;
+    return library().find(f => String(f.id) === String(id)) || null;
+  }
+
+  function renderFavorites(keepSelection = true) {
+    const list = Viewer.$('ed_fav_list');
+    if (!list) return;
+    const previous = keepSelection ? String(list.value || '') : '';
+    const items = library();
+    list.innerHTML = items.map(f => {
+      const category = f.category ? '[' + f.category + '] ' : '';
+      const linked = f.includeLinked && f.linkedCount ? ' +' + f.linkedCount : '';
+      const label = category + (f.name || f.sourceName || 'Unnamed prefab')
+        + ' — ' + (f.sourceName || f.from.w + '#' + f.from.i) + linked;
+      return '<option value="' + escapeHtml(f.id) + '">' + escapeHtml(label) + '</option>';
+    }).join('');
+    if (items.some(f => String(f.id) === previous)) list.value = previous;
+    Viewer.$('ed_fav_count').textContent = '(' + items.length + ')';
+    showFavorite();
+  }
+
+  function showFavorite(message) {
+    const info = Viewer.$('ed_fav_info');
+    if (!info) return;
+    const f = currentFavorite();
+    if (!f) {
+      info.textContent = message || (library().length
+        ? 'Select a favourite to see its source and placement details.'
+        : 'No favourites saved yet. Select an entity and save it here.');
+      return;
+    }
+    const src = srcEnt({ from: f.from });
+    const sourceText = src
+      ? src.n + ' · ' + f.from.w + ' #' + f.from.i
+      : (f.sourceName || 'Unknown class') + ' · ' + f.from.w + ' #' + f.from.i + ' (source not loaded)';
+    const linkText = f.includeLinked
+      ? 'Linked children: ' + (f.linkedCount || 0) + ' (copied when placed)'
+      : 'Linked children: not included';
+    info.textContent = (message ? message + '\n' : '')
+      + sourceText + '\n' + (f.category ? 'Category: ' + f.category + '\n' : '')
+      + linkText
+      + (f.note ? '\n' + f.note : '');
+  }
+
+  function nextFavoriteId() {
+    return library().reduce((max, f) => Math.max(max, Number(f.id) || 0), 0) + 1;
+  }
+
+  function selectedRecipe() {
+    const R = getEntityRecord();
+    if (!R || !R.e) throw 'select an entity in the 3D view first';
+    const H = R.add || R.m || {};
+    const from = R.add
+      ? { w: R.add.from.w, i: +R.add.from.i }
+      : { w: R.w, i: +R.e.i };
+    const source = srcEnt({ from });
+    if (!source) throw 'the original source instance could not be found';
+    const sourceWad = getWad(from.w);
+    if (!sourceWad) throw 'load the source volume containing ' + from.w;
+    const linkedCount = Math.max(0, linkTree(from.w, from.i).length - 1);
+    const hasCustomLinks = !!(H.lk && H.lk.length);
+    return {
+      from, source, sourceWad, linkedCount, hasCustomLinks,
+      dy: Number(H.dy) || 0, dp: Number(H.dp) || 0, dr: Number(H.dr) || 0,
+      regs: { ...(H.regs || {}) }
+    };
+  }
+
+  function saveFavorite() {
+    try {
+      const recipe = selectedRecipe();
+      const name = safeText(Viewer.$('ed_fav_name').value, 80)
+        || recipe.source.n + ' (' + lvOf(recipe.from.w) + ')';
+      const category = safeText(Viewer.$('ed_fav_category').value, 32);
+      const includeLinked = !!Viewer.$('ed_fav_links').checked;
+      const fp = typeof EC.fnv === 'function'
+        ? { A: EC.fnv(recipe.sourceWad.A), B: EC.fnv(recipe.sourceWad.B) }
+        : null;
+      const notes = [];
+      if (recipe.hasCustomLinks) {
+        notes.push('Custom editor link retargeting on the selected instance is not included; original source links are used.');
+      }
+      if (includeLinked && recipe.linkedCount >= 23) {
+        notes.push('This source reaches the linked-copy walker’s 24-instance safety limit; check whether it has additional linked objects.');
+      }
+      const note = notes.join(' ');
+      const favorite = {
+        id: nextFavoriteId(), name, category,
+        sourceName: recipe.source.n,
+        from: recipe.from,
+        includeLinked,
+        linkedCount: includeLinked ? recipe.linkedCount : 0,
+        dy: recipe.dy, dp: recipe.dp, dr: recipe.dr,
+        regs: recipe.regs,
+        fp, note
+      };
+      library().push(favorite);
+      Viewer.$('ed_fav_name').value = '';
+      renderFavorites(false);
+      Viewer.$('ed_fav_list').value = String(favorite.id);
+      showFavorite('Saved favourite "' + name + '".');
+      summary();
+    } catch (error) {
+      Viewer.$('ed_fav_info').textContent = 'Could not save favourite: ' + error;
+    }
+  }
+
+  function validateFavorite(raw, id) {
+    if (!raw || typeof raw !== 'object' || !raw.from || typeof raw.from.w !== 'string'
+      || !Number.isInteger(Number(raw.from.i)) || Number(raw.from.i) < 0) return null;
+    const name = safeText(raw.name || raw.sourceName, 80);
+    if (!name) return null;
+    const regs = {};
+    if (raw.regs && typeof raw.regs === 'object' && !Array.isArray(raw.regs)) {
+      for (const [key, value] of Object.entries(raw.regs)) {
+        if (/^\d+$/.test(key) && Number.isFinite(Number(value))) regs[key] = Number(value) >>> 0;
+      }
+    }
+    const fp = raw.fp && typeof raw.fp.A === 'string' && typeof raw.fp.B === 'string'
+      ? { A: raw.fp.A, B: raw.fp.B } : null;
+    return {
+      id, name, category: safeText(raw.category, 32),
+      sourceName: safeText(raw.sourceName || name, 80),
+      from: { w: safeText(raw.from.w, 128), i: Number(raw.from.i) },
+      includeLinked: raw.includeLinked !== false,
+      linkedCount: Math.max(0, Math.min(1000, Number(raw.linkedCount) || 0)),
+      dy: Number.isFinite(Number(raw.dy)) ? Number(raw.dy) : 0,
+      dp: Number.isFinite(Number(raw.dp)) ? Number(raw.dp) : 0,
+      dr: Number.isFinite(Number(raw.dr)) ? Number(raw.dr) : 0,
+      regs, fp, note: safeText(raw.note, 240)
+    };
+  }
+
+  function placeFavorite() {
+    try {
+      const favorite = currentFavorite();
+      if (!favorite) throw 'select a saved favourite first';
+      const targetId = Viewer.$('ed_lv').value, tw = wadOf(targetId);
+      if (!targetId || !tw) throw 'select a loaded target level first';
+      const source = srcEnt({ from: favorite.from });
+      if (!source) throw 'load the source volume containing ' + favorite.from.w;
+      const sourceWad = getWad(favorite.from.w);
+      if (!sourceWad) throw 'load the source volume containing ' + favorite.from.w;
+      if (favorite.fp && typeof EC.fnv === 'function') {
+        const actual = { A: EC.fnv(sourceWad.A), B: EC.fnv(sourceWad.B) };
+        if (actual.A !== favorite.fp.A || actual.B !== favorite.fp.B) {
+          throw 'source ' + favorite.from.w + ' does not match the game data this favourite was saved from';
+        }
+      }
+      if (tw !== favorite.from.w) {
+        const reason = ensureClass(tw, favorite.from.w, source.n);
+        if (reason) throw 'cannot place ' + source.n + ': ' + reason;
+        const bad = EC.prefabCheck(sourceWad.A, sourceWad.B, favorite.from.i);
+        if (bad) throw 'source instance cannot be copied safely: ' + bad;
+      }
+      const ground = getGround();
+      const at = ground(innerWidth / 2, innerHeight / 2, Viewer.sel ? Viewer.sel.p[1] : 0)
+        || Viewer.ggame(Viewer.camera.position.clone().addScaledVector(Viewer.fwd(), 25));
+      const add = {
+        from: { ...favorite.from }, p: at.map(r3),
+        dy: favorite.dy || 0, dp: favorite.dp || 0, dr: favorite.dr || 0,
+        regs: { ...(favorite.regs || {}) }
+      };
+      const start = pushAdds(tw, add, { deep: favorite.includeLinked });
+      Viewer.refresh();
+      const level = Viewer.D.find(l => l.id === targetId);
+      Viewer.sel = level && Viewer.all.find(o => o.L === targetId && o.i === level.nb + start) || null;
+      Viewer.inspect(Viewer.sel);
+      updateEntity();
+      Viewer.need = true;
+      showFavorite('Placed "' + favorite.name + '" in ' + targetId + '.');
+    } catch (error) {
+      Viewer.$('ed_fav_info').textContent = 'Could not place favourite: ' + error;
+    }
+  }
+
+  function removeFavorite() {
+    const favorite = currentFavorite();
+    if (!favorite) return;
+    const items = library(), index = items.indexOf(favorite);
+    if (index >= 0) items.splice(index, 1);
+    renderFavorites(false);
+    summary();
+  }
+
+  function downloadLibrary() {
+    const items = library();
+    if (!items.length) {
+      showFavorite('There are no favourites to export.');
+      return;
+    }
+    const blob = new Blob([JSON.stringify({
+      app: 'ininja-prefab-library', v: 1, prefabs: items
+    }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ininja-prefabs.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    showFavorite('Exported ' + items.length + ' favourite(s).');
+  }
+
+  async function importLibrary(event) {
+    const input = event.target, file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (data.app !== 'ininja-prefab-library' || !Array.isArray(data.prefabs)) {
+        throw 'not an I-Ninja prefab library';
+      }
+      const items = library(), keys = new Set(items.map(f => f.name + '|' + f.from.w + '|' + f.from.i));
+      let imported = 0, skipped = 0;
+      for (const raw of data.prefabs) {
+        const candidate = validateFavorite(raw, nextFavoriteId());
+        if (!candidate) { skipped++; continue; }
+        const key = candidate.name + '|' + candidate.from.w + '|' + candidate.from.i;
+        if (keys.has(key)) { skipped++; continue; }
+        candidate.id = nextFavoriteId();
+        items.push(candidate);
+        keys.add(key);
+        imported++;
+      }
+      renderFavorites(false);
+      summary();
+      showFavorite('Imported ' + imported + ' favourite(s); skipped ' + skipped + ' invalid or duplicate entr' + (skipped === 1 ? 'y.' : 'ies.'));
+    } catch (error) {
+      showFavorite('Import failed: ' + error);
+    }
+    input.value = '';
+  }
+
+  Viewer.$('ed_fav_save').onclick = saveFavorite;
+  Viewer.$('ed_fav_place').onclick = placeFavorite;
+  Viewer.$('ed_fav_delete').onclick = removeFavorite;
+  Viewer.$('ed_fav_export').onclick = downloadLibrary;
+  Viewer.$('ed_fav_import').onclick = () => Viewer.$('ed_fav_file').click();
+  Viewer.$('ed_fav_file').onchange = importLibrary;
+  Viewer.$('ed_fav_list').onfocus = () => renderFavorites();
+  Viewer.$('ed_fav_list').onchange = () => showFavorite();
+  renderFavorites();
+
   // Source link table cache: each pair is [owner instance, register index].
   function srcLinks(w) {
     if (LKC[w]) return LKC[w];
@@ -226,8 +493,11 @@ export function installPrefabManager({
 
   // Add one prefab, or include the recursively linked objects as independent
   // project additions and rewire every internal link between those copies.
-  function pushAdds(tw, a) {
-    const P = WS(tw), base = P.adds.length, deep = Viewer.$('ed_deep') && Viewer.$('ed_deep').checked;
+  function pushAdds(tw, a, options = {}) {
+    const P = WS(tw), base = P.adds.length;
+    const deep = options.deep === undefined
+      ? !!(Viewer.$('ed_deep') && Viewer.$('ed_deep').checked)
+      : !!options.deep;
     if (!deep) { P.adds.push(a); return base; }
     const tree = linkTree(a.from.w, a.from.i);
     if (tree.length < 2) { P.adds.push(a); return base; }
@@ -348,6 +618,6 @@ export function installPrefabManager({
   return {
     srcEnt, sourceClass, ensureClass, pushAdds, stripLinkRegs, addMaxId,
     injectMoveControl, resetCaches, invalidateChecks,
-    fillPrefabs, showRep
+    fillPrefabs, showRep, renderFavorites, saveFavorite, placeFavorite
   };
 }
