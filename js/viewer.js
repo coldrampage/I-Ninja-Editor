@@ -23,12 +23,16 @@ let files=[],levels={},D=[],all=[],show={},mats=[],collMat=null,entGroup=null,ho
 // Optional callback for model/overlay geometry owned by the editor UI. Keeping this
 // as an explicit module hook avoids relying on replacing the global buildEnts binding.
 let entityOverlayRefresh = null;
+let triggerOverlayRender = null;
 function notifyEntityOverlayRefresh(){
  if(typeof entityOverlayRefresh!=='function')return;
  try{entityOverlayRefresh()}catch(e){console.error('entity overlay refresh failed',e)}
 }
 export function setEntityOverlayRefresh(callback){
  entityOverlayRefresh=typeof callback==='function'?callback:null;
+}
+export function setTriggerOverlayRender(callback){
+ triggerOverlayRender=typeof callback==='function'?callback:null;
 }
 
 let yaw=0,pitch=-.6,speed=60,mz=-1;const keys={};
@@ -287,7 +291,7 @@ function tipUpdate(){const c=ggame(camera.position),q=hov;
 function selOverlay(){if(!sel)return;const a=project(sel.p);lg.strokeStyle='#ff0';lg.lineWidth=2;lg.beginPath();lg.arc(a.x,a.y,10,0,6.3);lg.stroke();
  const s=scr(sel),B=byKey();if(s)for(const[,t]of s.l){const o=B[sel.L+'#'+t];if(!o)continue;const b=project(o.p);lg.strokeStyle='#0ff';lg.beginPath();lg.moveTo(a.x,a.y);lg.lineTo(b.x,b.y);lg.stroke();lg.beginPath();lg.arc(b.x,b.y,7,0,6.3);lg.stroke()}
  for(const o of all){const t=scr(o);if(t&&o.L==sel.L&&t.l.some(x=>x[1]==sel.i)){const b=project(o.p);lg.strokeStyle='#f80';lg.beginPath();lg.moveTo(b.x,b.y);lg.lineTo(a.x,a.y);lg.stroke();lg.beginPath();lg.arc(b.x,b.y,7,0,6.3);lg.stroke()}}}
-function labels(){lg.clearRect(0,0,lc.width,lc.height);selOverlay();if(!$('l').checked||!all.length)return;const md=+$('ld').value||250,cp=camera.position,L=[];
+function labels(){lg.clearRect(0,0,lc.width,lc.height);selOverlay();if(typeof triggerOverlayRender==='function'&&sel){try{triggerOverlayRender({ctx:lg,project,selected:sel})}catch(e){console.error('trigger overlay render failed',e)}}if(!$('l').checked||!all.length)return;const md=+$('ld').value||250,cp=camera.position,L=[];
  for(const q of all){if(!shown(q))continue;const w=gworld(q.p),d=w.distanceTo(cp);if(d>md)continue;const s=w.project(camera);if(s.z>1||s.z<-1)continue;
   const x=(s.x+1)/2*innerWidth,y=(1-s.y)/2*innerHeight;if(x<0||y<0||x>innerWidth||y>innerHeight)continue;L.push([d,x,y,q.n+(q.to?' \u2192 '+q.to:'')+(()=>{if(!$('ls').checked)return'';const s=scr(q);if(!s)return'';const t=fill(q,s,s.c.brief);return' \u2014 '+(t.length>70?t.slice(0,68)+'\u2026':t)})()])}
  L.sort((a,b)=>a[0]-b[0]);lg.font='11px sans-serif';
@@ -333,6 +337,7 @@ const viewerApiBindings = {
   get openFiles() { return openFiles; }, set openFiles(value) { openFiles = value; },
   get pick() { return pick; },
   get pitch() { return pitch; }, set pitch(value) { pitch = value; },
+  get projectPoint() { return project; },
   get refresh() { return refresh; }, set refresh(value) { refresh = value; },
   get regTxt() { return regTxt; },
   get root() { return root; },

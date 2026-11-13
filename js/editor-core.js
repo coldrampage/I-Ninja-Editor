@@ -48,6 +48,19 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
  const moveShape=(sp,dd,seen)=>{if(!sp||seen.has(sp))return;seen.add(sp);const ty=U(sp)&0xffff,cnt=U(sp)>>>16,pp=U(sp+4);
   for(let k=0;k<3;k++){WF(sp+8+4*k,F(sp+8+4*k)+dd[k]);WF(sp+20+4*k,F(sp+20+4*k)+dd[k])}
   if((ty==5||ty==6)&&cnt>=3&&pp&&rel.has(sp+4)&&!seen.has(pp)){seen.add(pp);for(let v=0;v<cnt;v++)for(let k=0;k<3;k++)WF(pp+12*v+4*k,F(pp+12*v+4*k)+dd[k])}};
+ const writeTriggerShape=(instanceOff,trigger,pos,sourcePtr)=>{
+  const ty=+trigger.ty,box=trigger.box,poly=trigger.poly&&trigger.poly.slice();
+  if(!Number.isInteger(ty)||ty<0||ty>6)throw'invalid trigger type '+trigger.ty;
+  if(!Array.isArray(box)||box.length!==6||!box.every(Number.isFinite)||![0,1,2].every(k=>box[k]<box[k+3]))throw'invalid trigger bounds';
+  let verts=poly;
+  if(ty===5||ty===6){if(!verts||verts.length<9||verts.length%3||verts.length/3>64||!verts.every(Number.isFinite))throw'polygon trigger needs 3 to 64 finite vertices';}
+  const t=alloc(0x20,16);
+  if(sourcePtr>0&&sourcePtr+0x20<=A.length){for(let w=0;w<0x20;w+=4)W(t+w,U(sourcePtr+w));}else for(let w=0;w<0x20;w+=4)W(t+w,0);
+  for(let k=0;k<3;k++){WF(t+8+4*k,pos[k]+box[k]);WF(t+20+4*k,pos[k]+box[k+3])}
+  if(ty===5||ty===6){const count=verts.length/3,p=alloc(count*12,4);for(let i=0;i<count;i++)for(let k=0;k<3;k++)WF(p+i*12+4*k,pos[k]+verts[i*3+k]);W(t,((count<<16)|ty)>>>0);W(t+4,p);addRel(t+4);}
+  else{W(t,ty);W(t+4,0);rel.delete(t+4)}
+  W(instanceOff+0x34,t);addRel(instanceOff+0x34);
+ };
  const pathNodes=(dv,Uf,pn)=>{const seen=new Set();for(let g=0;g<64&&Uf(pn)>0&&!seen.has(pn);g++){seen.add(pn);pn=Uf(pn)}
   const nodes=[],s2=new Set();while(pn>0&&!s2.has(pn)&&nodes.length<64){s2.add(pn);nodes.push(pn);pn=Uf(pn+4)}return nodes};
  // yaw dy is a world-up turn applied on the left (and added to the +0x20 heading); pitch dp (local X) and roll dr (local Z) are applied on the right, after the original orientation. All in 4096-unit turns.
@@ -56,8 +69,9 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
  // ---- 1) in-place edits of existing instances
  const doneNodes=new Set(),doneShapes=new Set();
  for(const[k,m]of Object.entries(ops.mods||{})){const i=+k;if(!(i<nin))throw'instance '+i+' out of range in '+wadName;if(del.has(i))continue;const o=ins+i*INS,dd=m.d||[0,0,0];
-  if(dd.some(x=>x)){for(let a=0;a<3;a++)WF(o+0x10+4*a,F(o+0x10+4*a)+dd[a]);moveShape(U(o+0x34),dd,doneShapes);
+  if(dd.some(x=>x)){for(let a=0;a<3;a++)WF(o+0x10+4*a,F(o+0x10+4*a)+dd[a]);if(!m.trigger)moveShape(U(o+0x34),dd,doneShapes);
    const pn=U(o+0x30);if(pn)for(const n of pathNodes(d,U,pn))if(!doneNodes.has(n)){doneNodes.add(n);for(let a=0;a<3;a++)WF(n+8+4*a,F(n+8+4*a)+dd[a])}}
+  if(m.trigger)writeTriggerShape(o,m.trigger,[F(o+0x10),F(o+0x14),F(o+0x18)],U(o+0x34));
   rot(o,m.dy||0,m.dp||0,m.dr||0);
   const rg=Object.entries(m.regs||{});if(rg.length){const cp=U(o+0x28),ni=d.getUint16(cp+0x18,true),old=U(o+0x2c),np=alloc(4*Math.max(ni,1));
    for(let r=0;r<ni;r++){W(np+4*r,U(old+4*r));if(rel.has(old+4*r))addRel(np+4*r)}W(o+0x2c,np);addRel(o+0x2c);
@@ -114,6 +128,7 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
     for(let q=0;q<3;q++){WF(t+8+4*q,sF(sp+8+4*q)+dd[q]);WF(t+20+4*q,sF(sp+20+4*q)+dd[q])}
     if((ty==5||ty==6)&&cnt>=3&&pp&&sRel.has(sp+4)){const pv=alloc(12*cnt);for(let v=0;v<cnt;v++)for(let q=0;q<3;q++)WF(pv+12*v+4*q,sF(pp+12*v+4*q)+dd[q]);W(t+4,pv);addRel(t+4)}else W(t+4,0);
     W(o+0x34,t);addRel(o+0x34)}
+   if(a.trigger)writeTriggerShape(o,a.trigger,a.p,U(o+0x34));
    rot(o,a.dy||0,a.dp||0,a.dr||0)});
   // links of existing instances to NEW instances picked by hand (the new instance's number is only known now)
   for(const[k,m]of Object.entries(ops.mods||{})){if(!m.lk||!m.lk.length||del.has(+k))continue;const to=T+map.get(+k)*INS,cp=U(to+0x28),nir=d.getUint16(cp+0x18,true),old=U(to+0x2c),np=alloc(4*Math.max(nir,1));

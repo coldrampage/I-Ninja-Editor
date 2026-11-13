@@ -124,15 +124,15 @@ Viewer.sel = { L: '10-00', i: 0, p: [1, 2, 3], n: 'TestPrefab' };
 // A linked child can carry its own register overrides, rotation and a custom
 // link to a second copied child. These values must survive save/export/place.
 project.wads['10-00.LCS'].mods = {
-  1: { d: [1, 0, -1], dy: 64, dp: 8, dr: 0, regs: { 2: 54321 }, lk: [[0, 77]] }
+  1: { d: [1, 0, -1], dy: 64, dp: 8, dr: 0, regs: { 2: 54321 }, trigger: { ty: 3, box: [-4, -2, -4, 4, 2, 4], poly: null }, lk: [[0, 77]] }
 };
 project.wads['10-00.LCS'].adds.push({
   from: { w: '10-00.LCS', i: 1 }, p: [16, 4, 19], dy: 32, dp: 0, dr: 0,
-  regs: { 3: 67890 }, id: 77, lk: []
+  regs: { 3: 67890 }, trigger: { ty: 5, box: [-2, -1, -2, 2, 1, 2], poly: [-2, 0, -2, 2, 0, -2, 2, 0, 2, -2, 0, 2] }, id: 77, lk: []
 });
 selectedRecord = {
   e: source, w: '10-00.LCS',
-  m: { dy: 256, dp: 16, dr: -8, regs: { 1: 12345 }, lk: [] }
+  m: { dy: 256, dp: 16, dr: -8, regs: { 1: 12345 }, trigger: { ty: 4, box: [-3, -3, -3, 3, 3, 3], poly: null }, lk: [] }
 };
 element('ed_fav_name').value = 'Shielded Ranx';
 element('ed_fav_category').value = 'Generators';
@@ -148,6 +148,9 @@ assert.equal(project.prefabs[0].linkedCount, 2, 'favourite records the linked-ch
 assert.equal(project.prefabs[0].nodes.length, 3, 'favourite stores the full linked graph');
 assert.equal(project.prefabs[0].nodes[1].dy, 64, 'favourite captures child rotation edits');
 assert.equal(project.prefabs[0].nodes[1].regs[2], 54321, 'favourite captures child register overrides');
+assert.equal(project.prefabs[0].nodes[0].trigger.ty, 4, 'favourite captures the root trigger override');
+assert.equal(project.prefabs[0].nodes[1].trigger.ty, 3, 'favourite captures the linked original child trigger override');
+assert.equal(project.prefabs[0].nodes[2].trigger.ty, 5, 'favourite captures the project-added child trigger override');
 assert.deepEqual(project.prefabs[0].nodes[1].links, [[0, 2]], 'favourite captures child custom links by graph index');
 assert.equal(project.prefabs[0].nodes[2].regs[3], 67890, 'favourite captures added-child register overrides');
 assert.equal(project.prefabs[0].dy, 256);
@@ -162,11 +165,14 @@ const placed = project.wads['10-00.LCS'].adds.slice(-3);
 assert.equal(placed.length, 3, 'placing a favourite copies every linked child and custom child');
 assert.equal(placed[0].dy, 256, 'favourite root rotation override is applied');
 assert.equal(placed[0].regs[1], 12345, 'favourite root register override is applied');
+assert.equal(placed[0].trigger.ty, 4, 'placed favourite root retains its trigger override');
 assert.deepEqual(placed[0].lk, [[0, placed[1].id]], 'placed favourite reconnects root to its copied child');
 assert.deepEqual(placed[1].lk, [[0, placed[2].id]], 'placed favourite reconnects the edited child to its custom linked child');
 assert.equal(placed[1].dy, 64, 'placed linked child keeps its rotation adjustment');
 assert.equal(placed[1].regs[2], 54321, 'placed linked child keeps its register overrides');
+assert.equal(placed[1].trigger.ty, 3, 'placed linked child keeps its trigger override');
 assert.equal(placed[2].regs[3], 67890, 'placed custom child keeps its own register overrides');
+assert.equal(placed[2].trigger.ty, 5, 'placed custom child keeps its trigger override');
 assert.deepEqual(placed[2].lk, [[0, placed[0].id]], 'placed custom child reconnects to the root');
 
 // The same project-wide favourite can be placed in another compatible level.
@@ -181,6 +187,8 @@ assert.deepEqual(crossLevel[0].lk, [[0, crossLevel[1].id]], 'cross-level favouri
 assert.deepEqual(crossLevel[1].lk, [[0, crossLevel[2].id]], 'cross-level favourite keeps the child-to-child link');
 assert.equal(crossLevel[0].from.w, '10-00.LCS', 'cross-level favourite retains its original source reference');
 assert.equal(crossLevel[1].regs[2], 54321, 'cross-level child register overrides are retained');
+assert.equal(crossLevel[0].trigger.ty, 4, 'cross-level favourite root trigger override is retained');
+assert.equal(crossLevel[1].trigger.ty, 3, 'cross-level linked child trigger override is retained');
 assert.ok(archiveEnsures >= 2, 'favourite placement asks the archive resolver for source and target context');
 
 // Import merges unique source/name recipes and ignores duplicate entries.
@@ -224,6 +232,9 @@ const roundTrip = project.prefabs.find(f => f.name === 'Shielded Ranx');
 assert.ok(roundTrip, 'exported graph favourite can be imported into a fresh project');
 assert.equal(roundTrip.nodes.length, 3, 'library round-trip retains every linked graph node');
 assert.equal(roundTrip.nodes[1].regs[2], 54321, 'library round-trip retains child register overrides');
+assert.equal(roundTrip.nodes[0].trigger.ty, 4, 'library round-trip retains root trigger overrides');
+assert.equal(roundTrip.nodes[1].trigger.ty, 3, 'library round-trip retains linked child trigger overrides');
+assert.equal(roundTrip.nodes[2].trigger.ty, 5, 'library round-trip retains added child trigger overrides');
 assert.deepEqual(roundTrip.nodes[1].links, [[0, 2]], 'library round-trip retains child link topology');
 assert.equal(roundTrip.nodes[2].regs[3], 67890, 'library round-trip retains added-child register overrides');
 
@@ -237,7 +248,7 @@ linkMode = false;
 console.log('PASS prefab favourites save root and per-child overrides, custom links and source fingerprints');
 console.log('PASS prefab favourites place full child graphs with rewired relationships and per-child registers');
 console.log('PASS prefab library import deduplicates and removal preserves placed objects');
-console.log('PASS prefab library v2 round-trip retains complete child settings and links');
+console.log('PASS prefab library v2 round-trip retains complete child settings, trigger overrides and links');
 
 
 const remainingFavorites = project.prefabs.length;

@@ -1,8 +1,9 @@
+import { installTriggerEditor } from './trigger-editor.js?v=step15-trigger-editor';
 // Entity inspector, transforms, register editing, link reassignment and entity copy/paste.
 // All application state and cross-feature operations are injected by the coordinator.
 export function installEntityEditor({
   Viewer, EC, getProject, wadOf, getWad, WS, base, put, unzero, srcEnt,
-  addMaxId, ensureClass, pushAdds, stripLinkRegs, summary, rmList, r3
+  addMaxId, ensureClass, pushAdds, stripLinkRegs, summary, rmList, r3, setTriggerOverlayRender = () => {}
 }) {
   let clip = null;
   let grab = false;
@@ -33,7 +34,7 @@ export function installEntityEditor({
       put(R.e, {
         d: R.add.p.map((v, j) => v - B.p[j]),
         dy: R.add.dy || 0, dp: R.add.dp || 0, dr: R.add.dr || 0,
-        regs: R.add.regs
+        regs: R.add.regs, trigger: R.add.trigger
       });
     } else {
       put(R.e, R.m);
@@ -41,7 +42,7 @@ export function installEntityEditor({
     }
     const q = Viewer.all.find(o => o.L === Viewer.sel.L && o.i === R.e.i);
     Object.assign(q, {
-      p: R.e.p, b: R.e.b, poly: R.e.poly, path: R.e.path,
+      p: R.e.p, b: R.e.b, poly: R.e.poly, path: R.e.path, shape: R.e.shape, pathbox: R.e.pathbox, xzOnly: R.e.xzOnly,
       r: R.e.r, q: R.e.q, params: R.e.params
     });
     Viewer.sel = q;
@@ -71,6 +72,17 @@ export function installEntityEditor({
     (R.add || R.m).regs[k] = v >>> 0;
     redo(R);
   }
+  function setTrigger(R, trigger) {
+    const H = R.add || R.m;
+    if (trigger) H.trigger = { ty: trigger.ty, box: trigger.box.slice(), poly: trigger.poly ? trigger.poly.slice() : null };
+    else delete H.trigger;
+    redo(R);
+  }
+  const triggerEditor = installTriggerEditor({
+    Viewer, setOverlayRender: setTriggerOverlayRender,
+    commit: (q, trigger) => { const R = rec(q); if (R) setTrigger(R, trigger); }
+  });
+
   const nudge = (dx, dy, dz, dyaw) => {
     if (!Viewer.sel) return;
     const R = rec(Viewer.sel);
@@ -90,6 +102,7 @@ export function installEntityEditor({
     else if (Viewer.sel && wadOf(Viewer.sel.L)) lv.value = Viewer.sel.L;
     if (!R) {
       S.innerHTML = '<span class=h>click an entity to edit it</span>';
+      triggerEditor.render(S, null, null);
       return;
     }
     const e = R.e, f = (id, v, st) => '<input type=number id=' + id + ' value="' + v + '" step=' + st + ' style="width:62px">';
@@ -106,6 +119,7 @@ export function installEntityEditor({
         return '<div>r' + k + ' ' + (p.s ? '<span class=h>"' + Viewer.esc(p.s) + '"</span>' : '<input type=number id=ed_r' + k + ' data-k=' + k + ' value=' + (p.v >>> 0) + ' style="width:100px">') + '</div>';
       }).join('') + '<div class=h>raw 32-bit values (floats are stored as their bit pattern). A register that links to another object has a link... button: press it, then click the object to link to (same level; Esc cancels).</div></details>' : '');
 
+    triggerEditor.render(S, Viewer.sel, R);
     const g = id => +Viewer.$(id).value;
     for (const id of ['ed_x', 'ed_y', 'ed_z']) Viewer.$(id).onchange = () => setPos(R, [g('ed_x'), g('ed_y'), g('ed_z')]);
     Viewer.$('ed_w').onchange = () => setYaw(R, g('ed_w'));
@@ -219,8 +233,8 @@ export function installEntityEditor({
     if (!R) return;
     const H = R.add || R.m;
     clip = R.add
-      ? { from: { ...R.add.from }, dy: R.add.dy || 0, dp: R.add.dp || 0, dr: R.add.dr || 0, regs: { ...R.add.regs } }
-      : { from: { w: R.w, i: R.e.i }, dy: R.m.dy || 0, dp: R.m.dp || 0, dr: R.m.dr || 0, regs: { ...R.m.regs } };
+      ? { from: { ...R.add.from }, dy: R.add.dy || 0, dp: R.add.dp || 0, dr: R.add.dr || 0, regs: { ...R.add.regs }, trigger: R.add.trigger && { ty: R.add.trigger.ty, box: R.add.trigger.box.slice(), poly: R.add.trigger.poly && R.add.trigger.poly.slice() } }
+      : { from: { w: R.w, i: R.e.i }, dy: R.m.dy || 0, dp: R.m.dp || 0, dr: R.m.dr || 0, regs: { ...R.m.regs }, trigger: R.m.trigger && { ty: R.m.trigger.ty, box: R.m.trigger.box.slice(), poly: R.m.trigger.poly && R.m.trigger.poly.slice() } };
     clip.lk = (H.lk || []).map(l => l.slice());
     clip.at = R.w;
     Viewer.$('ed_sum').textContent = 'copied ' + R.e.n;
@@ -240,7 +254,7 @@ export function installEntityEditor({
       const sp = Viewer.sel.p, g = ground(mouse.x, mouse.y, Viewer.sel.p[1]);
       return g || [sp[0] + 3, sp[1], sp[2] + 3];
     })();
-    const a = { from: { ...clip.from }, p: p.map(r3), dy: clip.dy, dp: clip.dp || 0, dr: clip.dr || 0, regs: { ...clip.regs } };
+    const a = { from: { ...clip.from }, p: p.map(r3), dy: clip.dy, dp: clip.dp || 0, dr: clip.dr || 0, regs: { ...clip.regs }, trigger: clip.trigger && { ty: clip.trigger.ty, box: clip.trigger.box.slice(), poly: clip.trigger.poly && clip.trigger.poly.slice() } };
     if (clip.at === w && clip.lk && clip.lk.length) a.lk = clip.lk.map(l => l.slice());
     else stripLinkRegs(a);
     // Cross-level clones require the source class and its dependencies in the target level.
@@ -288,6 +302,7 @@ export function installEntityEditor({
     setPosition: (q, p) => { const R = rec(q); if (R) setPos(R, p); },
     setYaw: (q, deg) => { const R = rec(q); if (R) setYaw(R, deg); },
     setRegister: (q, k, v) => { const R = rec(q); if (R) setReg(R, k, v); },
+    setTrigger: (q, trigger) => { const R = rec(q); if (R) setTrigger(R, trigger); },
     copy,
     paste,
     ground,

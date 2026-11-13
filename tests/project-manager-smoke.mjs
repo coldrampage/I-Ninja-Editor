@@ -17,7 +17,7 @@ installProjectManager({
   getProject:()=>project, setProject:j=>{project=j;},
   isVol:()=>volReady, getWad:()=>null, volOf:()=>null, getVolName:()=> 'vol', loadedVols:()=>[],
   buildScriptWadsFp:()=>({}), sndPlan:noOp, avlLoad:async()=>{}, avlOk:()=>false, vbase:x=>String(x||'').replace(/\.(vol|avl)$/i,'').toLowerCase(),
-  getAvl:()=>null, sourceClass:()=>null, unzero:()=>false,
+  getAvl:()=>null, sourceClass:()=>null, unzero:m=>!!m.trigger,
   onProjectLoaded:()=>{ projectLoadHooks++; }
 });
 
@@ -61,7 +61,7 @@ assert.equal(projectLoadHooks, 3, 'legacy project open refreshes dependent proje
 
 
 // Verify the project download payload includes the cross-level favourites library.
-const savedProject = { ...project, prefabs: [
+const savedProject = { ...project, wads: { '10-00.LCS': { mods: { '5': { trigger: { ty: 4, box: [-2, -2, -2, 2, 2, 2], poly: null } } }, adds: [], del: [] } }, prefabs: [
   { id: 2, name: 'Ranx shield', from: { w: '10-00.LCS', i: 12 }, includeLinked: true }
 ] };
 project = savedProject;
@@ -75,6 +75,8 @@ volReady = true;
 elements.ed_save.onclick();
 const exportedProject = JSON.parse(downloadedText);
 assert.deepEqual(exportedProject.prefabs, savedProject.prefabs, 'Save project JSON includes the prefab favourites library');
+assert.deepEqual(exportedProject.wads['10-00.LCS'].mods['5'].trigger, savedProject.wads['10-00.LCS'].mods['5'].trigger, 'Save project JSON retains trigger overrides');
 assert.match(elements.ed_sum.textContent, /1 prefab favourite/);
 
 console.log('PASS project save payload includes the prefab favourites library');
+console.log('PASS project save payload retains trigger overrides as per-entity modifications');

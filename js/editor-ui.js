@@ -3,14 +3,14 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js';
+import { EC } from './editor-core.js?v=step15-trigger-editor';
 import { IA } from './strat-assembler.js';
-import { Viewer } from './viewer.js';
-import { installModelEditor } from './models-panel.js';
+import { Viewer, setTriggerOverlayRender } from './viewer.js?v=step15-trigger-editor';
+import { installModelEditor } from './models-panel.js?v=step15-trigger-editor';
 import { installScriptEditor } from './script-editor.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js';
-import { installPrefabManager } from './prefabs.js?v=step14-camera-source-variants';
+import { installEntityEditor } from './entity-editor.js?v=step15-trigger-editor';
+import { installPrefabManager } from './prefabs.js?v=step15-trigger-editor';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -166,11 +166,12 @@ async function avlLoad(v){const a=AVLS[vbase(v)];if(!a)throw'no '+vbase(v)+'.avl
 const sndPlan=w=>{if(!avlOk(volOf(w)))return undefined;const f=Viewer.files.find(x=>x.name===w);if(!f)return undefined;const dv=new DataView(f.buf,f.off),p=EC.SoundPlan(dv.getUint32(0x78,true),dv.getUint32(0x7c,true)),add=p.add;p.add=r=>{const sv=volOf(r.w);if(!avlOk(sv))throw'its sounds come from '+r.w+' and need '+vbase(sv)+'.avl loaded';return add(r)};return p};
 const WS=w=>{const P=PRJ.wads[w]||(PRJ.wads[w]={vol:volOf(w)||volName,mods:{},adds:[]});P.del=P.del||[];P.classes=P.classes||[];return P};
 const qm=(a,b)=>[a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]];
-const base=e=>e.base||(e.base={p:e.p.slice(),b:e.b&&e.b.slice(),poly:e.poly&&e.poly.slice(),path:e.path&&e.path.map(n=>n.slice()),r:e.r,q:e.q&&e.q.slice(),pv:e.params.map(p=>p.v)});
-function put(e,m){const B=base(e),d=m.d||[0,0,0],dy=m.dy||0,dp=m.dp||0,dr=m.dr||0;e.p=B.p.map((v,k)=>r2(v+d[k]));e.b=B.b&&B.b.map((v,k)=>r2(v+d[k%3]));e.poly=B.poly&&B.poly.map((v,k)=>r2(v+d[k%3]));
+const base=e=>e.base||(e.base={p:e.p.slice(),b:e.b&&e.b.slice(),poly:e.poly&&e.poly.slice(),path:e.path&&e.path.map(n=>n.slice()),shape:e.shape,pathbox:!!e.pathbox,xzOnly:!!e.xzOnly,r:e.r,q:e.q&&e.q.slice(),pv:e.params.map(p=>p.v)});
+function put(e,m){const B=base(e),d=m.d||[0,0,0],dy=m.dy||0,dp=m.dp||0,dr=m.dr||0;e.p=B.p.map((v,k)=>r2(v+d[k]));e.b=B.b&&B.b.map((v,k)=>r2(v+d[k%3]));e.poly=B.poly&&B.poly.map((v,k)=>r2(v+d[k%3]));e.shape=B.shape;e.pathbox=B.pathbox;e.xzOnly=B.xzOnly;
+ if(m.trigger){const t=m.trigger;e.shape=t.ty;e.pathbox=false;e.xzOnly=[0,2,5].includes(t.ty);e.b=t.box.map((v,k)=>r2(v+e.p[k%3]));e.poly=t.poly?t.poly.map((v,k)=>r2(v+e.p[k%3])):null}
  e.path=B.path&&B.path.map(n=>n.map((v,k)=>r2(v+d[k])));e.r=B.r+dy;if(B.q){const g2=x=>x/4096*2*Math.PI,ay=g2(dy),ap=g2(dp),ar=g2(dr);e.q=qm(qm([0,Math.sin(ay/2),0,Math.cos(ay/2)],B.q),qm([Math.sin(ap/2),0,0,Math.cos(ap/2)],[0,0,Math.sin(ar/2),Math.cos(ar/2)]))}
  e.params=e.params.map((p,k)=>m.regs&&m.regs[k]!==undefined&&!p.s?{...p,v:m.regs[k]>>>0}:{...p,v:B.pv[k]})}
-const unzero=m=>m.d.some(x=>x)||m.dy||m.dp||m.dr||Object.keys(m.regs).length||(m.lk&&m.lk.length);
+const unzero=m=>m.d.some(x=>x)||m.dy||m.dp||m.dr||Object.keys(m.regs).length||(m.lk&&m.lk.length)||!!m.trigger;
 // Shared project status and removed-entity restoration UI. These stayed in the
 // coordinator when entity editing moved into entity-editor.js because Models
 // and Entity Editor both use them.
@@ -193,7 +194,7 @@ function applyEdits(){for(const lv of Viewer.D){const w=wadOf(lv.id);if(!w)conti
     Viewer.analyseLevel(lv.id);
    }
    const s=srcEnt(a);if(!s)return;const B=base(s),e={...s,params:s.params.map(p=>({...p})),i:lv.nb+k,added:k+1,base:{...B}};
-   put(e,{d:a.p.map((v,j)=>v-B.p[j]),dy:a.dy||0,dp:a.dp||0,dr:a.dr||0,regs:a.regs});lv.ents.push(e);
+   put(e,{d:a.p.map((v,j)=>v-B.p[j]),dy:a.dy||0,dp:a.dp||0,dr:a.dr||0,regs:a.regs,trigger:a.trigger});lv.ents.push(e);
    const sl=Viewer.SCR.levels[srcLevel],tl=Viewer.SCR.levels[lv.id];
    if(sl&&sl[s.i]&&tl)tl[e.i]=linkView(lv,P,sl[s.i],a,srcLevel===lv.id,true)
   });
@@ -251,7 +252,7 @@ const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setP
 
 const entityEditor=installEntityEditor({
   Viewer,EC,getProject:()=>PRJ,wadOf,getWad,WS,base,put,unzero,srcEnt,
-  addMaxId:prefabManager.addMaxId,ensureClass:prefabManager.ensureClass,pushAdds:prefabManager.pushAdds,stripLinkRegs:prefabManager.stripLinkRegs,summary,rmList,r3
+  addMaxId:prefabManager.addMaxId,ensureClass:prefabManager.ensureClass,pushAdds:prefabManager.pushAdds,stripLinkRegs:prefabManager.stripLinkRegs,summary,rmList,r3,setTriggerOverlayRender
 });
 edUpdate=entityEditor.update;
 rec=entityEditor.rec;
