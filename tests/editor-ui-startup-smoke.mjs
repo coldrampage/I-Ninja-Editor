@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 
 const source = fs.readFileSync(new URL('../js/editor-ui.js', import.meta.url), 'utf8');
 const prefabs = fs.readFileSync(new URL('../js/prefabs.js', import.meta.url), 'utf8');
+const volCore = fs.readFileSync(new URL('../js/vol-core.js', import.meta.url), 'utf8');
 const panelInsert = source.indexOf("Viewer.$('ctl').insertBefore(ui,Viewer.$('ctl').firstChild)");
 assert.notEqual(panelInsert, -1, 'editor panel is inserted into #ctl');
 
@@ -59,3 +60,9 @@ assert.doesNotMatch(source, /function\s+(?:spLoad|tryClass|pushAdds|relvInject|l
 assert.match(prefabs, /function\s+pushAdds\s*\(/, 'prefab module owns linked-child copy operation');
 assert.match(prefabs, /function\s+injectMoveControl\s*\(/, 'prefab module owns cross-level move control');
 console.log('PASS: prefab module boundaries and dependency injection');
+
+// The coordinator must explicitly import every parser helper it injects into the prefab module.
+assert.match(source, /import\s*\{[^}]*\binstances\b[^}]*\bfixups\b[^}]*\}\s*from ['\"]\.\/vol-core\.js['\"]/, 'coordinator imports instances and fixups from vol-core');
+assert.match(volCore, /export\s*\{[^}]*\binstances\b[^}]*\bfixups\b[^}]*\}/s, 'vol-core exports instances and fixups');
+assert.match(source, /installPrefabManager\(\{[^}]*\binstances\s*,\s*fixups/s, 'prefab module receives the imported parser helpers');
+console.log('PASS: prefab parser helpers are imported, exported and injected');

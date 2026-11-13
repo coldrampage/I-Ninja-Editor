@@ -1,7 +1,7 @@
 // ES-module coordinator for the existing editor UI.
 // Parser, editor, assembler, and viewer APIs are imported directly.
 import {
-  parseVol, readWad, r2, siWad
+  parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
 import { EC } from './editor-core.js';
 import { IA } from './strat-assembler.js';

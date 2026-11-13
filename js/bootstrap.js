@@ -1,6 +1,6 @@
 // ES-module bootstrap. All application modules import their dependencies directly.
 try {
-  await import('./editor-ui.js?v=step10-prefab-module');
+  await import('./editor-ui.js?v=step10a-prefab-import-fix');
   document.documentElement.dataset.editorReady = 'true';
   console.info('I-Ninja Editor v18: ES-module application loaded.');
 } catch (error) {
