@@ -282,8 +282,8 @@ function copyData(S,bld,roots,hooks){const cl=dataClosure(S,roots),map=new Map()
 // copyGraph() copies the missing ones too (textures, materials, meshes, parts, skeletons, level data), registers each one in the loader's
 // fixup stream (mergeB keeps the stream's kind order: textures, materials, level data, skeletons, meshes, parts) and splits a prop's
 // vertices/indices out of a shared mesh into a small mesh of its own, the way the game stores animated props.
-const RES_COPY=new Set([1,4,5,6,7,8,0x21,0x22,0x23,0x24,0x113,0x115]);
-const GROUP={0x113:0,0x115:1,0x10a:2,0x1:3,0x6:4,0x7:5,0x4:6,0x8:7,0x117:8,0x10e:9,0x24:10,0x23:10,0x21:11,0x5:11,0x22:11,0x402:12};
+const RES_COPY=new Set([1,4,5,6,7,8,0x21,0x22,0x23,0x24,0x113,0x115,0x118]);
+const GROUP={0x113:0,0x115:1,0x118:1,0x10a:2,0x1:3,0x6:4,0x7:5,0x4:6,0x8:7,0x117:8,0x10e:9,0x24:10,0x23:10,0x21:11,0x5:11,0x22:11,0x402:12};
 function mergeB(B0,newRel,specs){
  const w0=new Uint32Array(B0.buffer.slice(B0.byteOffset,B0.byteOffset+B0.byteLength)),ents=[];
  for(let i=0;i<w0.length;){const sp=w0[i]>=0x80000000;ents.push([i,sp?2:1,sp?w0[i]&0xffff:-1]);i+=sp?2:1}
@@ -319,13 +319,31 @@ function copyGraph(S,bld,roots,hooks,opts){opts=opts||{};const A=S.A,U=S.U,relS=
    if(!addRes)throw'no equivalent of resource type 0x'+c.type.toString(16)+' @'+t.toString(16)+' in the target';
    if((c.type===0x113||c.type===0x115)&&!hooks.snd)throw'it uses sounds this level does not have; to copy sounds load the level\'s .avl (same name as the .vol) together with the .vol';
    if(!RES_COPY.has(c.type))throw'it needs '+resName(c.type)+' @'+t.toString(16)+', which this level does not have and which cannot be copied yet';
-   let size=ext(t),extra=null;
-   if(c.type===0x113){const bi=bankInfo(A,t);if(!bi||bi.strmAt==null)throw'sound bank @'+t.toString(16)+' has no stream chunk';size=Math.ceil(bi.tot/4)*4;if(t+size>A.length)throw'sound bank @'+t.toString(16)+' runs past the end of the level'}
+   let size=ext(t),extra=null,bank=null,ampcDeps=[];
+   if(c.type===0x113){
+    bank=bankInfo(A,t);
+    if(!bank)throw'sound bank @'+t.toString(16)+' is not a valid RIFF resource';
+    size=Math.ceil(bank.tot/4)*4;
+    if(bank.kind==='AMPC'){
+     // AMPC is an interactive music/effects bank, not a PCM stream descriptor.
+     // Its amrf chunk lists GUIDs for WAVE/WAVS banks in this same LCS. Copy
+     // those banks as dependencies so their stream bytes are transferred into
+     // the destination PCA, while the AMPC's GUID references remain intact.
+     ampcDeps=ampcSoundOffsets(S,t,bank);
+     if(ampcDeps.length&&!hooks.snd)throw'AMPC sound bank @'+t.toString(16)+' needs its source .avl/.PCA to copy '+ampcDeps.length+' referenced sound(s)';
+    }else if((bank.kind==='WAVE'||bank.kind==='WAVS')&&bank.strmAt!=null){
+     if(!hooks.snd)throw'sound bank @'+t.toString(16)+' needs its source .avl/.PCA';
+    }else throw'sound bank @'+t.toString(16)+' has unsupported format '+bank.kind;
+    if(t+size>A.length)throw'sound bank @'+t.toString(16)+' runs past the end of the level';
+   }
    if(c.type===0x115)size=Math.min(size,16);if((c.type===0x21||c.type===0x22)&&size===16&&S.res.get(t+16)===5){extra={type:5,at:16};size=16+ext(t+16)}
    if(size<=0||size>0x1000)throw resName(c.type)+' @'+t.toString(16)+' has an unexpected size ('+size+')';
-   const nd={k:'res',type:c.type,off:t,size,ptrs:[],own:null,owned:[],deps:new Set(),extra,rels:[],kinds:[]};nodes.set(t,nd);order.push(nd);units.push(nd);
+   const nd={k:'res',type:c.type,off:t,size,ptrs:[],own:null,owned:[],deps:new Set(),extra,rels:[],kinds:[],bankKind:bank&&bank.kind};nodes.set(t,nd);order.push(nd);units.push(nd);
    if(extra)nodes.set(t+16,{k:'alias',parent:nd,delta:16});
    if(own){own.deps.add(nd)}
+   // AMPC's amrf references are GUID-based rather than relocation pointers.
+   // Make the matching source-level WAVE/WAVS bank explicit in the graph.
+   for(const dep of ampcDeps)q.push([dep,nd,0]);
    for(let p=t;p<t+size;p+=4)if(relS.has(p)){const v=D(p),off=p-t;nd.ptrs.push([off,v]);
     if((nd.type===0x21||nd.type===0x22)&&off===0xc&&splittable(v)){let g=groups.get(v);if(!g){g={k:'group',m:v,parts:[],recs:[],deps:new Set(),rels:[],kinds:[]};groups.set(v,g);units.push(g)}g.parts.push(nd);nd.split=g;nd.deps.add(g);
      const a=D(t+0x38);nd.recOff=a;if(!g.recs.includes(a))g.recs.push(a);continue}
@@ -358,7 +376,7 @@ function copyGraph(S,bld,roots,hooks,opts){opts=opts||{};const A=S.A,U=S.U,relS=
   else throw'unresolvable pointer ('+c.k+') @'+v.toString(16);map.set(v,n);return n};
  const recOwner=new Map();for(const g of groups.values())for(const a of g.recs)recOwner.set(a,g);
  for(const nd of order){const to=map.get(nd.off);bld.A.set(A.subarray(nd.off,nd.off+nd.size),to);
-  if(nd.k==='res'&&nd.type===0x113){const bi=bankInfo(A,nd.off);W(to+(bi.strmAt-nd.off),hooks.snd.add({w:S.wadName,kind:bi.kind,off:bi.off,len:bi.len}))}
+  if(nd.k==='res'&&nd.type===0x113){const bi=bankInfo(A,nd.off);if(bi.strmAt!=null)W(to+(bi.strmAt-nd.off),hooks.snd.add({w:S.wadName,kind:bi.kind,off:bi.off,len:bi.len}));else if(bi.kind!=='AMPC')throw'sound bank @'+nd.off.toString(16)+' has no supported stream chunk'}
   const arr=nd.k==='res'?nd.rels:(nd.own?nd.own.rels:null);
   for(const[off,v]of nd.ptrs){const n=(nd.k==='res'&&nd.split&&off===0xc)?nd.split.base:mapT(v);W(to+off,n);if(arr)bld.addRelTo(arr,to+off);else bld.addRel(to+off)}
   if(nd.k==='data'&&recOwner.has(nd.off)){const r=recOwner.get(nd.off).recPatch.get(nd.off);W(to+32,r.vOff);W(to+36,r.iOff)}}
@@ -380,6 +398,33 @@ function copyGraph(S,bld,roots,hooks,opts){opts=opts||{};const A=S.A,U=S.U,relS=
 function bankInfo(A,o){const d=new DataView(A.buffer,A.byteOffset,A.length);if(o<0||o+12>A.length||d.getUint32(o,true)!==0x46464952)return null;const tot=d.getUint32(o+4,true)+8,kind=String.fromCharCode(A[o+8],A[o+9],A[o+10],A[o+11]);
  let p=o+12,strmAt=null,off=0,len=0;while(p+8<=o+tot&&p+8<=A.length){const id=String.fromCharCode(A[p],A[p+1],A[p+2],A[p+3]),n=d.getUint32(p+4,true);if(id==='strm'){strmAt=p+8;off=d.getUint32(p+8,true);len=d.getUint32(p+12,true)}p+=8+n+(n&1)}
  return{kind,off,len,strmAt,tot}}
+// Resolve the GUIDs carried by an AMPC music/effects descriptor to the WAVE/WAVS
+// sound-bank resources in the same LCS. Those banks carry the actual PCA stream
+// offsets and are copied through the regular SoundPlan path.
+function riffChunks(A,o){
+ const d=new DataView(A.buffer,A.byteOffset,A.length);
+ if(o<0||o+12>A.length||d.getUint32(o,true)!==0x46464952)return null;
+ const tot=d.getUint32(o+4,true)+8,end=o+tot;if(tot<12||end>A.length)return null;
+ const kind=String.fromCharCode(A[o+8],A[o+9],A[o+10],A[o+11]),chunks={};let p=o+12;
+ while(p+8<=end){const id=String.fromCharCode(A[p],A[p+1],A[p+2],A[p+3]),n=d.getUint32(p+4,true);if(p+8+n>end)return null;(chunks[id]||(chunks[id]=[])).push({at:p+8,n});p+=8+n+(n&1)}
+ return{kind,tot,chunks};
+}
+const hexBytes=b=>Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+function ampcSoundOffsets(S,o,info){
+ const riff=riffChunks(S.A,o);if(!riff||riff.kind!=='AMPC')throw'AMPC bank @'+o.toString(16)+' is malformed';
+ const refs=[];
+ for(const ch of riff.chunks.amrf||[]){
+  if(ch.n<4)throw'AMPC bank @'+o.toString(16)+' has a short amrf chunk';
+  const d=new DataView(S.A.buffer,S.A.byteOffset,S.A.length),count=d.getUint32(ch.at,true),need=4+count*20;
+  if(count>4096||need>ch.n)throw'AMPC bank @'+o.toString(16)+' has an invalid amrf reference count';
+  for(let i=0;i<count;i++)refs.push(hexBytes(S.A.subarray(ch.at+4+i*20,ch.at+20+i*20)));
+ }
+ const byGuid=new Map();
+ for(const[off,type]of S.res){if(type!==0x113||off===o)continue;const b=bankInfo(S.A,off);if(!b||(b.kind!=='WAVE'&&b.kind!=='WAVS'))continue;const r=riffChunks(S.A,off),g=r&&r.chunks.guid&&r.chunks.guid[0];if(g&&g.n===16){const key=hexBytes(S.A.subarray(g.at,g.at+16));if(!byGuid.has(key))byGuid.set(key,off)}}
+ const out=[];
+ for(const guid of refs){const off=byGuid.get(guid);if(off==null)throw'AMPC bank @'+o.toString(16)+' references sound GUID '+guid+' which is not present in '+(S.wadName||'the source LCS');if(!out.includes(off))out.push(off)}
+ return out;
+}
 // where the audio of the banks being copied goes in the target's PCA; add() returns the new stream offset for the copied bank
 function SoundPlan(h78,h7c){const p={h78,h7c,h78_0:h78,h7c_0:h7c,adds:[],seen:new Map(),add(r){const key=r.w+'|'+r.kind+'|'+r.off+'|'+r.len;if(p.seen.has(key))return p.seen.get(key);let n;
   if(r.kind==='WAVE'){n=p.h78;p.h78+=r.len}else if(r.kind==='WAVS'){n=p.h7c;p.h7c+=Math.ceil(r.len/0x800)*0x800}else throw'sound bank type '+r.kind+' is not supported';
@@ -649,6 +694,6 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
  const membershipConflicts=out.filter(M=>M.modelMembershipConflict).length;
  out.modelGroups=modelGroups;out.modelGroupById=groupById;out.modelMembershipConflicts=membershipConflicts;out.modelRefCount=modelRefs.length;out.modelIndirectRefs=modelRefs.indirectAdded||0;out.modelGraph={chainEdges,possibleNodeEdges,scriptDescriptors:[...scriptDescriptorRoles],descriptorCandidateCount:descriptorCandidates.length,ownerLinked:ownerOf.size,ownerMismatches,policy:'all evidence retained; primary membership is prioritised, never first-claim ownership'};
  return out}
-return{fnv,deflate,packWad,patchLcs,healResDir,SoundPlan,buildPca,bankInfo,rebuildVol,prefabCheck,referrers,parseModels,classReports,KN,parseBank,ResIndex,resResolver,SrcCtx,classify,dataClosure,canon,Builder,copyData,copyGraph,mergeB,copierSelfTest,groupOf,transplantClasses}})();
+return{fnv,deflate,packWad,patchLcs,healResDir,SoundPlan,buildPca,bankInfo,riffChunks,ampcSoundOffsets,rebuildVol,prefabCheck,referrers,parseModels,classReports,KN,parseBank,ResIndex,resResolver,SrcCtx,classify,dataClosure,canon,Builder,copyData,copyGraph,mergeB,copierSelfTest,groupOf,transplantClasses}})();
 
 export { EC };

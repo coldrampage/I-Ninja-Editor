@@ -1,6 +1,6 @@
 // ES-module bootstrap. All application modules import their dependencies directly.
 try {
-  await import('./editor-ui.js?v=step19-waypoint-delete');
+  await import('./editor-ui.js?v=step20-ampc-sound-dependencies');
   document.documentElement.dataset.editorReady = 'true';
   console.info('I-Ninja Editor v18: ES-module application loaded.');
 } catch (error) {

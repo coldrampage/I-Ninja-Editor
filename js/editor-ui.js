@@ -3,14 +3,14 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js?v=step19-waypoint-delete';
+import { EC } from './editor-core.js?v=step20-ampc-sound-dependencies';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step19-waypoint-delete';
-import { installModelEditor } from './models-panel.js?v=step19-waypoint-delete';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step20-ampc-sound-dependencies';
+import { installModelEditor } from './models-panel.js?v=step20-ampc-sound-dependencies';
 import { installScriptEditor } from './script-editor.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step19-waypoint-delete';
-import { installPrefabManager } from './prefabs.js?v=step19-waypoint-delete';
+import { installEntityEditor } from './entity-editor.js?v=step20-ampc-sound-dependencies';
+import { installPrefabManager } from './prefabs.js?v=step20-ampc-sound-dependencies';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
