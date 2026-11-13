@@ -1,38 +1,44 @@
-# I-Ninja Editor v18 — source dependency map and migration state
+# I-Ninja Editor v18 — dependency map and migration state
 
-The five application files retain the original dependency relationships described below. The first ES-module conversion step makes `vol-core.js` an actual module and uses `bootstrap.js` as a temporary bridge so the still-classic scripts continue to see its API.
+## Current execution model (ES-module step 4)
 
-## Current execution model
+1. `index.html` loads Three.js (CDN), `three-fallback.js`, then `bootstrap.js` as an ES module.
+2. `bootstrap.js` statically imports `vol-core.js`, `editor-core.js` and `strat-assembler.js`, then temporarily publishes their public APIs on `window` for code not yet migrated away from global names.
+3. `bootstrap.js` dynamically imports `editor-ui.js`.
+4. `editor-ui.js` statically imports `parseVol`, `EC`, `IA` and `exposeViewerGlobals`.
+5. The `editor-ui.js` dependency graph evaluates `viewer.js` after the core bridge is ready. The UI module then installs the viewer's live compatibility accessors and starts the existing editor UI.
 
-1. `three-fallback.js` runs as a classic script after the Three.js CDN script.
-2. `bootstrap.js` runs as an ES module and imports `vol-core.js`.
-3. The bootstrap copies the exported core API onto `window` and then loads the remaining classic scripts sequentially: `viewer.js`, `editor-core.js`, `strat-assembler.js`, `editor-ui.js`.
-4. This preserves the original execution order and classic-script global environment while establishing the first explicit module boundary.
+## Responsibilities and dependencies
 
-## Main responsibilities and dependencies
-
-| File | Current state | Responsibility | Depends on |
+| File | State | Responsibility | Direct dependencies |
 |---|---|---|---|
-| `three-fallback.js` | Classic script | Supplies local Three.js fallback | `window`, `document` |
-| `bootstrap.js` | ES module | Imports core API, exposes temporary compatibility bridge, loads legacy scripts | `vol-core.js` |
+| `three-fallback.js` | Classic script | Existing local Three.js fallback | `window`, `document` |
+| `bootstrap.js` | ES module | Module startup and temporary core compatibility bridge | `vol-core.js`, `editor-core.js`, `strat-assembler.js`, `editor-ui.js` (dynamic) |
 | `vol-core.js` | ES module | VOL/BIGB/LCS parsing, model/texture/collision parsing, entity extraction, script analysis and metadata | Browser typed arrays and `DataView` |
-| `viewer.js` | Classic script | Renderer, scene/camera, loaded files/levels, selection, script browser and inspection | `THREE`, core API globals and DOM |
-| `editor-core.js` | Classic script, IIFE API `EC` | Archive/resource copying, patching, rebuilding and prefab/model helpers | Core API globals |
-| `strat-assembler.js` | Classic script, IIFE API `IA` | Script decoding, formatting, assembly, relocation and verification | `SI_OPS`, `SI_CAT`, `fixups`, `siCstr` |
-| `editor-ui.js` | Classic script | Project state, entity edits, prefab copying, register/link editing, model assignment and UI | Core globals, viewer globals, `EC`, `IA`, DOM |
+| `editor-core.js` | ES module; exports `EC` | Archive/resource copying, patching, rebuilding, prefab/model helpers | Explicit imports from `vol-core.js` |
+| `strat-assembler.js` | ES module; exports `IA` | Script decoding, formatting, assembly, relocation and verification | Explicit imports from `vol-core.js` |
+| `viewer.js` | ES module | Renderer, scene/camera, loaded files/levels, selection, script browser and inspection; exports live compatibility accessors | `THREE`, temporary core globals, DOM |
+| `editor-ui.js` | ES module | Project state, entity edits, prefab copying, register/link editing, model assignment and UI | Explicit module imports plus temporary `window` compatibility accessors for legacy identifiers |
 
 ## Migration sequence
 
-1. **Complete:** Convert `vol-core.js` to an ES module while leaving its algorithms unchanged. The named exports are temporarily bridged onto `window` for legacy consumers.
-2. Convert `editor-core.js` to a module with explicit imports from `vol-core.js`; retain its public `EC` API during this step.
-3. Convert `strat-assembler.js` to a module with explicit imports from `vol-core.js`; retain its public `IA` API.
-4. Convert the viewer to a module and establish a narrow interface for state/actions consumed by the editor UI.
-5. Convert `editor-ui.js` last, replacing its current direct global dependencies with explicit imports.
-6. Remove the temporary `window` bridge and produce a bundled standalone HTML distribution build if still desired.
+1. **Complete:** Convert `vol-core.js` to an ES module.
+2. **Complete:** Convert `editor-core.js` to an ES module with explicit imports and the existing `EC` API.
+3. **Complete:** Convert `strat-assembler.js` to an ES module with explicit imports and the existing `IA` API.
+4. **Complete:** Convert `viewer.js` to an ES module with a temporary live compatibility interface.
+5. **Complete:** Load `editor-ui.js` as an ES module and establish its module dependencies explicitly. Its implementation still uses the temporary global compatibility surface to avoid a behaviour-changing rewrite.
+6. **Next:** Replace the UI's remaining bare global references with explicit `Core`, `Viewer`, `EC` and `IA` module APIs; remove the temporary global bridge and viewer accessors.
+7. **Later:** Add a single-file standalone distribution build if desired.
 
-## Important constraints
+## Constraints
 
-- ES modules require HTTP(S) in common browsers; use GitHub Pages for the hosted development build. Opening `index.html` via `file://` is not a supported test path for this build.
-- Keep relative file paths so repository subpath hosting works.
-- Module code runs in strict mode. When viewer/editor scripts are migrated, replace accidental implicit globals such as `onresize = rs` with explicit `window` properties or event listeners.
-- Do not combine module conversion with parser changes, project format changes, imported-resource persistence, or new features.
+- Use GitHub Pages (HTTP(S)) to run the module build; `file://` is not a supported test path.
+- Keep paths relative so repository subpath hosting works.
+- Do not combine the module cleanup with parser changes, project-format changes, imported-resource persistence or new features.
+- Keep the last known-good archive available for rollback.
+
+## Step 4 — editor UI module boundary
+
+`bootstrap.js` initialises the core compatibility surface, then dynamically imports `editor-ui.js`. The UI module statically imports the core parser entry point, `EC`, `IA` and `exposeViewerGlobals`. This causes the viewer module to evaluate after the core bridge is ready. The UI module installs the viewer's live accessors before entering the preserved UI IIFE.
+
+The UI implementation body is intentionally unchanged in this step. Its free identifiers continue to resolve through the browser's global object environment, where the compatibility accessors and core API bridge are installed. The next cleanup step will replace those names with explicit module API references and remove the compatibility surface.

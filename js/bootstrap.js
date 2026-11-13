@@ -1,35 +1,20 @@
 // ES-module bootstrap for the staged v18 migration.
-// The binary core, editor subsystem, script assembler and viewer are ES modules.
-// The UI remains classic temporarily and consumes a narrow compatibility bridge.
+// All application subsystems are ES modules. The legacy UI compatibility
+// surface is installed by editor-ui.js immediately before its UI initialises.
 import * as Core from './vol-core.js';
 import { EC } from './editor-core.js';
 import { IA } from './strat-assembler.js';
 
-// Temporary compatibility bridge for the remaining classic-script UI.
-// Core APIs and the two converted subsystems are published only at this boundary.
+// Temporary compatibility bridge for existing viewer/UI code. Core APIs are
+// still published here until the next cleanup stage removes bare global use.
 Object.assign(window, Core, { EC, IA });
 
-const legacyScripts = ['./editor-ui.js'];
-
-function loadClassicScript(relativePath) {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = new URL(relativePath, import.meta.url).href;
-    script.async = false;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error(`Could not load ${relativePath}`));
-    document.head.appendChild(script);
-  });
-}
-
 try {
-  const Viewer = await import('./viewer.js');
-  Viewer.exposeViewerGlobals(window);
-  for (const path of legacyScripts) {
-    await loadClassicScript(path);
-  }
+  // editor-ui.js statically imports the viewer module and installs its live
+  // compatibility accessors before running the existing editor UI.
+  await import('./editor-ui.js');
   document.documentElement.dataset.editorReady = 'true';
-  console.info('I-Ninja Editor v18: ES-module core and legacy UI loaded.');
+  console.info('I-Ninja Editor v18: ES-module application loaded.');
 } catch (error) {
   console.error('I-Ninja Editor startup failed:', error);
   const status = document.getElementById('st');

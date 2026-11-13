@@ -1,3 +1,21 @@
+// ES-module entry point for the existing editor UI.
+// The UI implementation below is deliberately kept intact for this migration step.
+// Its existing identifiers resolve through the temporary compatibility surface on
+// window; the following cleanup step will replace those with direct module APIs.
+import { parseVol } from './vol-core.js';
+import { EC } from './editor-core.js';
+import { IA } from './strat-assembler.js';
+import { exposeViewerGlobals } from './viewer.js';
+
+// Ensure the bootstrap and this module refer to the same core/editor/assembler APIs.
+if (window.parseVol !== parseVol || window.EC !== EC || window.IA !== IA) {
+  throw new Error('I-Ninja module bridge was not initialised before the editor UI.');
+}
+
+// Viewer state remains module-owned; these live accessors temporarily support the
+// existing UI's reads and controlled overrides without taking snapshots.
+exposeViewerGlobals(window);
+
 
 // ---- editor UI: edits live in a project (json); the game files are never modified, a patched copy is built on demand
 (()=>{
