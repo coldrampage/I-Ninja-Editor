@@ -1,4 +1,4 @@
-import { installTriggerEditor } from './trigger-editor.js?v=step15-trigger-editor';
+import { installTriggerEditor } from './trigger-editor.js?v=step16-cylinder-resize';
 // Entity inspector, transforms, register editing, link reassignment and entity copy/paste.
 // All application state and cross-feature operations are injected by the coordinator.
 export function installEntityEditor({

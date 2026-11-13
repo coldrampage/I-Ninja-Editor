@@ -3,14 +3,14 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js?v=step15-trigger-editor';
+import { EC } from './editor-core.js?v=step16-cylinder-resize';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender } from './viewer.js?v=step15-trigger-editor';
-import { installModelEditor } from './models-panel.js?v=step15-trigger-editor';
+import { Viewer, setTriggerOverlayRender } from './viewer.js?v=step16-cylinder-resize';
+import { installModelEditor } from './models-panel.js?v=step16-cylinder-resize';
 import { installScriptEditor } from './script-editor.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step15-trigger-editor';
-import { installPrefabManager } from './prefabs.js?v=step15-trigger-editor';
+import { installEntityEditor } from './entity-editor.js?v=step16-cylinder-resize';
+import { installPrefabManager } from './prefabs.js?v=step16-cylinder-resize';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.

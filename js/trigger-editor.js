@@ -19,13 +19,21 @@ const cloneTrigger = t => t && ({
   poly: t.poly ? t.poly.slice() : null,
 });
 
-export function normalizeTriggerBounds(box, ty) {
+export function normalizeTriggerBounds(box, ty, resizeAxis = null) {
   const b = box.slice(0, 6).map(Number);
   if (b.length !== 6 || !b.every(Number.isFinite)) throw new Error('Trigger bounds must contain six finite numbers');
   for (let k = 0; k < 3; k++) if (b[k + 3] - b[k] < 0.1) b[k + 3] = b[k] + 0.1;
   const center = [0, 1, 2].map(k => (b[k] + b[k + 3]) / 2);
   let size = [0, 1, 2].map(k => b[k + 3] - b[k]);
-  if (ty === 2 || ty === 3) size[0] = size[2] = Math.max(size[0], size[2], 0.1);
+  if (ty === 2 || ty === 3) {
+    // A circular trigger has one horizontal diameter. During a drag, use the
+    // face being manipulated as the controlling diameter; taking max(X, Z)
+    // made an inward drag lose to the untouched axis and only shift the centre.
+    const diameter = resizeAxis === 0 || resizeAxis === 2
+      ? size[resizeAxis]
+      : Math.max(size[0], size[2]);
+    size[0] = size[2] = Math.max(diameter, 0.1);
+  }
   if (ty === 4) size.fill(Math.max(...size, 0.1));
   for (let k = 0; k < 3; k++) {
     b[k] = center[k] - size[k] / 2;
@@ -74,9 +82,14 @@ function centreAndSize(box) {
   };
 }
 
-function makeBox(offset, size, oldBox, ty) {
+function makeBox(offset, size, oldBox, ty, resizeAxis = null) {
   const nextSize = size.map(v => Math.max(0.1, Math.abs(Number(v) || 0.1)));
-  if (ty === 2 || ty === 3) nextSize[0] = nextSize[2] = Math.max(nextSize[0], nextSize[2]);
+  if (ty === 2 || ty === 3) {
+    const diameter = resizeAxis === 0 || resizeAxis === 2
+      ? nextSize[resizeAxis]
+      : Math.max(nextSize[0], nextSize[2]);
+    nextSize[0] = nextSize[2] = diameter;
+  }
   if (ty === 4) nextSize.fill(Math.max(...nextSize));
   if (Y_IGNORED_TYPES.has(ty)) {
     const c = (oldBox[1] + oldBox[4]) / 2, h = oldBox[4] - oldBox[1];
@@ -136,7 +149,7 @@ export function installTriggerEditor({ Viewer, commit, setOverlayRender = () => 
       `<div style="margin-top:3px"><b>Centre offset</b><br>X ${h('ed_tr_ox', cs.offset[0])} Y ${h('ed_tr_oy', cs.offset[1], 0.5, Y_IGNORED_TYPES.has(t.ty))} Z ${h('ed_tr_oz', cs.offset[2])}</div>` +
       `<div style="margin-top:3px"><b>Size</b><br>X ${h('ed_tr_sx', cs.size[0])} Y ${h('ed_tr_sy', cs.size[1], 0.5, Y_IGNORED_TYPES.has(t.ty))} Z ${h('ed_tr_sz', cs.size[2])}</div>` +
       `<div style="margin-top:4px"><button id="ed_tr_reset" ${hasOverride ? '' : 'disabled'}>reset trigger</button> <span class="h">${hasOverride ? 'project override active' : 'original game bounds'}</span></div>` +
-      `<div class="h" style="margin-top:3px">${t.ty === 2 ? 'Infinite cylinder: vertical bounds are ignored by the game.' : t.ty === 4 ? 'Sphere: all three dimensions are kept equal.' : t.ty === 5 ? 'Polygon footprint: vertices scale with X/Z dimensions.' : t.ty === 6 ? '3D polygon: vertices scale with the edited bounds.' : t.ty === 0 ? 'Flat box: vertical bounds are ignored by the game.' : 'Primitive trigger dimensions can be resized independently.'}</div>` +
+      `<div class="h" style="margin-top:3px">${(t.ty === 2 || t.ty === 3) ? 'Cylinder: horizontal resize handles change the shared XZ diameter while keeping the opposite face anchored.' : t.ty === 4 ? 'Sphere: all three dimensions are kept equal.' : t.ty === 5 ? 'Polygon footprint: vertices scale with X/Z dimensions.' : t.ty === 6 ? '3D polygon: vertices scale with the edited bounds.' : t.ty === 0 ? 'Flat box: vertical bounds are ignored by the game.' : 'Primitive trigger dimensions can be resized independently.'}</div>` +
       `</details>`);
 
     const detail = container.querySelector('#ed_trigger');
@@ -144,10 +157,10 @@ export function installTriggerEditor({ Viewer, commit, setOverlayRender = () => 
     const fields = ['ed_tr_ox', 'ed_tr_oy', 'ed_tr_oz', 'ed_tr_sx', 'ed_tr_sy', 'ed_tr_sz'];
     const read = () => fields.map(id => Number(container.querySelector('#' + id)?.value));
     const typeSelect = container.querySelector('#ed_tr_type');
-    const apply = (newTy = Number(typeSelect.value)) => {
+    const apply = (newTy = Number(typeSelect.value), resizeAxis = null) => {
       const v = read();
       if (!v.every(Number.isFinite)) return;
-      const old = fromEntity(e, R), nextBox = makeBox(v.slice(0, 3), v.slice(3), old.box, newTy);
+      const old = fromEntity(e, R), nextBox = makeBox(v.slice(0, 3), v.slice(3), old.box, newTy, resizeAxis);
       let poly = null;
       if (POLYGON_TYPES.has(newTy)) {
         if (POLYGON_TYPES.has(old.ty) && old.poly) poly = scaleTriggerPolygon(old.poly, old.box, nextBox);
@@ -158,7 +171,7 @@ export function installTriggerEditor({ Viewer, commit, setOverlayRender = () => 
     typeSelect.onchange = () => apply(Number(typeSelect.value));
     for (const id of fields) {
       const input = container.querySelector('#' + id);
-      if (input) input.onchange = () => apply();
+      if (input) input.onchange = () => apply(undefined, id === 'ed_tr_sx' ? 0 : id === 'ed_tr_sz' ? 2 : null);
     }
     const reset = container.querySelector('#ed_tr_reset');
     if (reset) reset.onclick = () => commit(q, null);
@@ -228,7 +241,7 @@ export function installTriggerEditor({ Viewer, commit, setOverlayRender = () => 
     if (i === axis) next[i] = Math.min(next[i], next[axis + 3] - 0.1);
     else next[i] = Math.max(next[i], next[axis] + 0.1);
     const t = fromEntity(drag.R.e, drag.R);
-    drag.box = normalizeTriggerBounds(next, t.ty);
+    drag.box = normalizeTriggerBounds(next, t.ty, axis);
     Viewer.need = true;
     e.preventDefault();
     e.stopImmediatePropagation();
