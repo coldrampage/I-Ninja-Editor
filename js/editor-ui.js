@@ -9,6 +9,7 @@ import { Viewer } from './viewer.js';
 import { installModelEditor } from './models-panel.js';
 import { installScriptEditor } from './script-editor.js';
 import { installProjectManager } from './project-manager.js';
+import { installEntityEditor } from './entity-editor.js';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -16,11 +17,10 @@ import { installProjectManager } from './project-manager.js';
 
 // ---- editor UI: edits live in a project (json); the game files are never modified, a patched copy is built on demand
 (()=>{
-let PRJ={app:'ininja-editor',v:1,vol:null,wads:{}},clip=null,grab=false,mouse={x:0,y:0},volName='vol',AVLS={},WC={},SP={},pfFor=null,inR=0;
-let resetModelCaches=()=>{},buildScriptWadsFp=()=>({});
+let PRJ={app:'ininja-editor',v:1,vol:null,wads:{}},volName='vol',AVLS={},WC={},SP={},pfFor=null,inR=0;
+let resetModelCaches=()=>{},buildScriptWadsFp=()=>({}),edUpdate=()=>{},rec=()=>null,ground=()=>null;
 const r3=x=>Math.round(x*1000)/1000,wadOf=L=>Viewer.levels[L]&&Viewer.levels[L].LCS?Viewer.levels[L].LCS.name:null,lvOf=w=>w.replace(/\.LCS$/i,'');
 const isVol=()=>Viewer.files.some(f=>f.vol&&f.buf&&f.buf.byteLength>16&&new DataView(f.buf).getUint32(0,true)===0x544c4f56);
-let linkPick=null,regOpen=false;
 const vbase=n=>String(n||'').replace(/\.(vol|avl)$/i,'').toLowerCase(),volOf=w=>{const f=Viewer.files.find(x=>x.name===w);return f&&f.vol},loadedVols=()=>[...new Set(Viewer.files.filter(f=>f.vol).map(f=>f.vol))];
 const avlOk=v=>!!v&&!!AVLS[vbase(v)];
 // the .avl is only read when a patched one has to be built
@@ -55,70 +55,7 @@ function linkView(lv,P,x,a,sameLevel,isAdd){const y={...x,r:(x.r||[]).slice(),l:
  for(const[rg,cid]of(a.lk||[])){const n=P.adds.findIndex(z=>z.id===cid);if(n>=0)set(+rg,lv.nb+n)}
  return y}
 const orf=Viewer.refresh;Viewer.refresh=()=>{if(!inR){inR=1;try{applyEdits()}finally{inR=0}}orf();edUpdate()};
-const ent=q=>{const lv=Viewer.D.find(l=>l.id===q.L);return lv&&lv.ents.find(e=>e.i===q.i)};
-// the editable record of an entity: a mod (moved original) or an add (new instance)
-function rec(q){const e=ent(q),w=wadOf(q.L);if(!e||!w)return null;const P=WS(w);
- if(e.added)return{e,w,add:P.adds[e.added-1]};const m=P.mods[e.i]||(P.mods[e.i]={d:[0,0,0],dy:0,dp:0,dr:0,regs:{}});return{e,w,m}}
-function redo(R){if(R.add){const s=srcEnt(R.add),B=base(s);put(R.e,{d:R.add.p.map((v,j)=>v-B.p[j]),dy:R.add.dy||0,dp:R.add.dp||0,dr:R.add.dr||0,regs:R.add.regs})}else{put(R.e,R.m);if(!unzero(R.m))delete PRJ.wads[R.w].mods[R.e.i]}
- const q=Viewer.all.find(o=>o.L===Viewer.sel.L&&o.i===R.e.i);Object.assign(q,{p:R.e.p,b:R.e.b,poly:R.e.poly,path:R.e.path,r:R.e.r,q:R.e.q,params:R.e.params});Viewer.sel=q;Viewer.buildEnts();Viewer.need=true;edUpdate()}
-function setPos(R,p){if(R.add)R.add.p=p.map(r3);else R.m.d=p.map((v,k)=>r3(v-base(R.e).p[k]));redo(R)}
-function setYaw(R,deg){const dy=r3((deg/360*4096)-(R.add?base(srcEnt(R.add)).r:base(R.e).r));if(R.add)R.add.dy=dy;else R.m.dy=dy;redo(R)}
-function setTilt(R,key,deg){const v=r3(deg/360*4096);if(R.add)R.add[key]=v;else R.m[key]=v;redo(R)}
-function setReg(R,k,v){(R.add||R.m).regs[k]=v>>>0;redo(R)}
-const nudge=(dx,dy,dz,dyaw)=>{if(!Viewer.sel)return;const R=rec(Viewer.sel);if(!R)return;const p=R.e.p;setPos(R,[p[0]+dx,p[1]+dy,p[2]+dz]);if(dyaw)setYaw(R,(R.e.r/4096*360+dyaw+360)%360)};
-// ---- panel
-const ui=document.createElement('div');ui.id='ed';
-ui.innerHTML='<hr><b>Editor</b> <span class=h>edits go in a project file; game files are never touched</span><details style="margin:3px 0"><summary class=h>current scope</summary><div class=h><b>Rotation:</b> yaw, pitch and roll are editable. Yaw turns about world up; pitch (local X) and roll (local Z) are applied on top of the original orientation and shown as changes from it.<br><b>No LCM edits:</b> only .LCS strat data can be edited. The project format is per-wad, so LCM edits can slot in later.</div></details><div style="margin:3px 0"><button id=ed_open>open project</button> <button id=ed_save>save project</button> <button id=ed_patch>build patched .vol</button> <button id=ed_md>models</button> <button id=ed_stb>copier self-test</button></div><input type=file id=ed_pf style=display:none accept=.json><div id=ed_sum class=h></div><div id=ed_rm class=h></div><div id=ed_sel class=h>click an entity to edit it</div>'
- +'<div style="margin-top:4px"><span class=h>add prefab to</span> <select id=ed_lv style="max-width:90px"></select> <select id=ed_cl style="max-width:170px"></select> <button id=ed_add>add</button><br><label class=h title="A spawner links to the objects it spawns. Tick this to copy those objects too, as separate objects that link to each other, so the copy spawns its own set."><input type=checkbox id=ed_deep> also copy the objects it links to</label></div>';
-Viewer.$('ctl').insertBefore(ui,Viewer.$('ctl').firstChild);
-Viewer.$('ed_open').onclick=()=>Viewer.$('ed_pf').click();
-const getWad=w=>{if(WC[w])return WC[w];const f=Viewer.files.find(x=>x.name===w);if(!f)return null;const[A,B]=readWad(f.buf,f);return WC[w]={A,B,cls:new Set(siWad(A,B).classes.map(c=>c.name))}};
-function summary(){let m=0,a=0,n=0,r=0;for(const w in PRJ.wads){const x=Object.values(PRJ.wads[w].mods).filter(unzero).length,y=PRJ.wads[w].adds.length,z=(PRJ.wads[w].del||[]).length;m+=x;a+=y;r+=z;if(x||y||z)n++}Viewer.$('ed_sum').textContent=m+' moved/edited, '+a+' added, '+r+' removed in '+n+' level(s)'+(Object.keys(PRJ.vols||{}).length>1?' ['+Object.keys(PRJ.vols).join(', ')+']':'')}
-function rmList(){const out=[];for(const lv of Viewer.D){const w=wadOf(lv.id),P=w&&PRJ.wads[w];if(!P||!lv.all0)continue;for(const i of P.del||[])if(lv.all0[i])out.push([w,i,lv.all0[i].n,lv.id])}
- Viewer.$('ed_rm').innerHTML=out.length?'removed: '+out.slice(0,12).map(([w,i,n,L])=>L+'#'+i+' '+Viewer.esc(n)+' <a href=# data-w="'+w+'" data-i='+i+'>restore</a>').join(' &middot; ')+(out.length>12?' &hellip;':''):'';
- Viewer.$('ed_rm').querySelectorAll('a').forEach(a=>a.onclick=e=>{e.preventDefault();const P=PRJ.wads[a.dataset.w];P.del=P.del.filter(x=>x!=+a.dataset.i);Viewer.refresh()})}
-function edUpdate(){summary();rmList();const S=Viewer.$('ed_sel'),R=Viewer.sel&&rec(Viewer.sel),SI=Viewer.sel&&Viewer.scr(Viewer.sel);
- const lv=Viewer.$('ed_lv'),cur=lv.value;lv.innerHTML=Viewer.D.filter(l=>wadOf(l.id)).map(l=>'<option>'+l.id+'</option>').join('');if(cur)lv.value=cur;else if(Viewer.sel&&wadOf(Viewer.sel.L))lv.value=Viewer.sel.L;
- if(!R){S.innerHTML='<span class=h>click an entity to edit it</span>';return}
- const e=R.e,f=(id,v,st)=>'<input type=number id='+id+' value="'+v+'" step='+st+' style="width:62px">';
- S.innerHTML='<b style="color:'+Viewer.col(e.n)+'">'+Viewer.esc(e.n)+'</b> <span class=h>'+Viewer.sel.L+' #'+e.i+(e.added?' (new, copy of #'+R.add.from.i+')':'')+'</span><br>X '+f('ed_x',e.p[0],.5)+' Y '+f('ed_y',e.p[1],.5)+' Z '+f('ed_z',e.p[2],.5)+'<br>yaw '+f('ed_w',+(e.r/4096*360).toFixed(1),5)+'&deg;<br>pitch '+f('ed_pt',+(((R.add||R.m).dp||0)/4096*360).toFixed(1),5)+'&deg; roll '+f('ed_rl',+(((R.add||R.m).dr||0)/4096*360).toFixed(1),5)+'&deg; <span class=h>(change from original)</span><br>step <input type=number id=ed_st value='+(S.dataset.st||1)+' style="width:48px"><br>'
-  +['-X','+X','-Y','+Y','-Z','+Z'].map(t=>'<button data-n="'+t+'">'+t+'</button>').join('')+' <button data-n="L">&#8634;15</button><button data-n="R">&#8635;15</button><br><button id=ed_cp>copy</button> <button id=ed_ps>paste</button> '+'<button id=ed_del>'+(e.added?'delete':'remove')+'</button>'
-  +'<div class=h>hold G + move mouse to drag on the ground plane; Ctrl+C / Ctrl+V copy and paste at the cursor</div>'
-  +(e.params.some(p=>!p.s)?'<details'+(regOpen||linkPick?' open':'')+'><summary>registers</summary>'+e.params.map((p,k)=>{const lq=!p.s&&SI&&SI.l.find(a=>a[0]==k);if(lq){const H=R.add||R.m,ov=(H.lk||[]).some(l=>l[0]==k)||H.regs[k]!==undefined,on=linkPick&&linkPick.L===Viewer.sel.L&&linkPick.i===e.i&&linkPick.k==k;return '<div>r'+k+' <span class=h>'+Viewer.esc(Viewer.regTxt(Viewer.sel,SI,k))+'</span> <button data-lk='+k+(on?' style="background:#fa0"':'')+'>'+(on?'click target...':'link...')+'</button>'+(ov?' <button data-lkr='+k+' title="back to what the copied/original object had">reset</button>':'')+'</div>'}
-   return '<div>r'+k+' '+(p.s?'<span class=h>"'+Viewer.esc(p.s)+'"</span>':'<input type=number id=ed_r'+k+' data-k='+k+' value='+(p.v>>>0)+' style="width:100px">')+'</div>'}).join('')+'<div class=h>raw 32-bit values (floats are stored as their bit pattern). A register that links to another object has a link... button: press it, then click the object to link to (same level; Esc cancels).</div></details>':'');
- const g=id=>+Viewer.$(id).value;for(const id of['ed_x','ed_y','ed_z'])Viewer.$(id).onchange=()=>setPos(R,[g('ed_x'),g('ed_y'),g('ed_z')]);
- Viewer.$('ed_w').onchange=()=>setYaw(R,g('ed_w'));Viewer.$('ed_pt').onchange=()=>setTilt(R,'dp',g('ed_pt'));Viewer.$('ed_rl').onchange=()=>setTilt(R,'dr',g('ed_rl'));Viewer.$('ed_st').onchange=()=>{S.dataset.st=g('ed_st')};
- S.querySelectorAll('button[data-n]').forEach(b=>b.onclick=()=>{const s=+Viewer.$('ed_st').value||1,t=b.dataset.n,ax={X:0,Y:1,Z:2}[t[1]],v=[0,0,0];if(t=='L')return nudge(0,0,0,-15);if(t=='R')return nudge(0,0,0,15);v[ax]=t[0]=='-'?-s:s;nudge(...v,0)});
- S.querySelectorAll('input[data-k]').forEach(i=>i.onchange=()=>setReg(R,+i.dataset.k,+i.value));
- S.querySelectorAll('button[data-lk]').forEach(b=>b.onclick=()=>startLink(+b.dataset.lk));
- S.querySelectorAll('button[data-lkr]').forEach(b=>b.onclick=()=>resetLink(R,+b.dataset.lkr));
- const dt=S.querySelector('details');if(dt)dt.ontoggle=()=>{regOpen=dt.open};
- Viewer.$('ed_cp').onclick=copy;Viewer.$('ed_ps').onclick=()=>paste();const dl=Viewer.$('ed_del');if(dl)dl.onclick=()=>{const P=WS(R.w);if(R.e.added){const rid=R.add&&R.add.id;P.adds.splice(R.e.added-1,1);if(rid!==undefined)for(const x of[...P.adds,...Object.values(P.mods)])if(x.lk)x.lk=x.lk.filter(l=>l[1]!==rid)}else{const g=getWad(R.w),rf=g?EC.referrers(g.A,g.B,R.e.i).filter(o=>!P.del.includes(o)):[];
-   if(rf.length){Viewer.$('ed_sum').textContent='cannot remove #'+R.e.i+': '+rf.map(o=>'#'+o).join(', ')+' link to it. Remove or change those first.';return}P.del.push(R.e.i);delete P.mods[R.e.i]}Viewer.sel=null;Viewer.inspect(null);Viewer.refresh()}}
-// ---- manual link reassignment: press "link..." next to a link register, then click the object it should point at
-function startLink(k){const R=Viewer.sel&&rec(Viewer.sel);if(!R)return;linkPick={L:Viewer.sel.L,i:R.e.i,k};Viewer.cv.style.cursor='crosshair';edUpdate();Viewer.$('ed_sum').textContent='r'+k+' of '+R.e.n+' #'+R.e.i+': click the object to link to (same level, Esc cancels)'}
-function endPick(msg){linkPick=null;Viewer.cv.style.cursor='';edUpdate();if(msg)Viewer.$('ed_sum').textContent=msg}
-function finishLink(q){const lp=linkPick;if(!lp)return;if(q.L!==lp.L){Viewer.$('ed_sum').textContent='the target has to be in the same level ('+lp.L+'): click again, or Esc to cancel';return}
- const src=Viewer.all.find(o=>o.L===lp.L&&o.i===lp.i),R=src&&rec(src);if(!R){endPick();return}
- const H=R.add||R.m,te=ent(q);H.lk=(H.lk||[]).filter(l=>l[0]!==lp.k);
- if(te&&te.added){const T=WS(wadOf(q.L)).adds[te.added-1];if(T.id===undefined)T.id=addMaxId()+1;H.lk.push([lp.k,T.id]);delete H.regs[lp.k]}else H.regs[lp.k]=q.i>>>0;
- const nm=q.n;linkPick=null;Viewer.cv.style.cursor='';afterLink(lp.L,R.e.i);Viewer.$('ed_sum').textContent='r'+lp.k+' of '+R.e.n+' #'+R.e.i+' now links to #'+q.i+' '+nm}
-function resetLink(R,k){const H=R.add||R.m;H.lk=(H.lk||[]).filter(l=>l[0]!==k);delete H.regs[k];afterLink(Viewer.sel.L,R.e.i)}
-// link registers of an added object that were set by hand mean instance numbers of ONE level: drop them when the object goes to another level
 function stripLinkRegs(a){const L=srcLinks(a.from.w);if(L)for(const[ow,rg]of L.rows)if(ow===a.from.i)delete a.regs[rg];a.lk=[]}
-function afterLink(L,i){Viewer.refresh();Viewer.sel=Viewer.all.find(o=>o.L===L&&o.i===i)||null;Viewer.inspect(Viewer.sel);edUpdate();Viewer.need=true}
-const omu=onmouseup;onmouseup=e=>{if(linkPick&&Viewer.mdown&&Viewer.mdown.b==0&&Math.hypot(e.clientX-Viewer.mdown.x,e.clientY-Viewer.mdown.y)<4&&e.target===Viewer.cv){const q=Viewer.nearest(e.clientX,e.clientY);Viewer.mdown=null;Viewer.drag=null;if(q)finishLink(q);return}omu(e)};
-addEventListener('keydown',e=>{if(e.code==='Escape'&&linkPick)endPick('link pick cancelled')});
-function copy(){if(!Viewer.sel)return;const R=rec(Viewer.sel);if(!R)return;const H=R.add||R.m;clip=R.add?{from:{...R.add.from},dy:R.add.dy||0,dp:R.add.dp||0,dr:R.add.dr||0,regs:{...R.add.regs}}:{from:{w:R.w,i:R.e.i},dy:R.m.dy||0,dp:R.m.dp||0,dr:R.m.dr||0,regs:{...R.m.regs}};clip.lk=(H.lk||[]).map(l=>l.slice());clip.at=R.w;Viewer.$('ed_sum').textContent='copied '+R.e.n}
-function ground(mx,my,y){const v=new Viewer.V3(mx/innerWidth*2-1,-(my/innerHeight)*2+1,.5).unproject(Viewer.camera).sub(Viewer.camera.position).normalize();if(Math.abs(v.y)<1e-3)return null;const t=(y-Viewer.camera.position.y)/v.y;if(t<0||t>5000)return null;return Viewer.ggame(Viewer.camera.position.clone().addScaledVector(v,t))}
-function paste(at){if(!clip||!Viewer.sel)return;const w=wadOf(Viewer.sel.L);let p=at||(()=>{const sp=Viewer.sel.p,g=ground(mouse.x,mouse.y,Viewer.sel.p[1]);return g||[sp[0]+3,sp[1],sp[2]+3]})();
-const a={from:{...clip.from},p:p.map(r3),dy:clip.dy,dp:clip.dp||0,dr:clip.dr||0,regs:{...clip.regs}};if(clip.at===w&&clip.lk&&clip.lk.length)a.lk=clip.lk.map(l=>l.slice());else stripLinkRegs(a);
- // paste into the selected entity's level (clones from another level need a compatible class there)
- try{const t=getWad(w),s=getWad(clip.from.w);if(lvOf(clip.from.w)!==lvOf(w)){const n=srcEnt(a).n;const why=ensureClass(w,clip.from.w,n);if(why)throw n+' cannot be copied into '+w+': '+why;const bad=EC.prefabCheck(s.A,s.B,a.from.i);if(bad)throw bad}}catch(x){Viewer.$('ed_sum').textContent='cannot paste: '+x;return}
- const pi=pushAdds(w,a);Viewer.refresh();const L=lvOf(w),lv=Viewer.D.find(l=>l.id===L);Viewer.sel=Viewer.all.find(o=>o.L===L&&o.i===lv.nb+pi);Viewer.inspect(Viewer.sel);edUpdate();Viewer.need=true}
-addEventListener('keydown',e=>{const t=e.target.tagName;if(t==='INPUT'||t==='SELECT')return;if(e.code==='KeyG')grab=true;if((e.ctrlKey||e.metaKey)&&e.code==='KeyC'){copy();e.preventDefault()}if((e.ctrlKey||e.metaKey)&&e.code==='KeyV'){paste();e.preventDefault()}});
-addEventListener('keyup',e=>{if(e.code==='KeyG')grab=false});
-Viewer.cv.addEventListener('mousemove',e=>{mouse={x:e.clientX,y:e.clientY};if(grab&&Viewer.sel&&!Viewer.drag){const R=rec(Viewer.sel),g=R&&ground(e.clientX,e.clientY,Viewer.sel.p[1]);if(g)setPos(R,[g[0],Viewer.sel.p[1],g[2]])}});
 // ---- prefabs: one source instance per class, taken from the loaded levels (the class must exist in the target level)
 const PFI={},SCx={},PFR={};
 const srcCtx=w=>SCx[w]||(SCx[w]=(()=>{const g=getWad(w);return EC.SrcCtx(g.A,g.B)})());
@@ -215,7 +152,15 @@ function relvInject(){const R=Viewer.sel&&rec(Viewer.sel);const S=Viewer.$('ed_s
    try{for(const a of grp){if(lvOf(a.from.w)!==lvOf(nw)){const nm=srcEnt(a).n,why=ensureClass(nw,a.from.w,nm);if(why)throw nm+' cannot be copied into '+nw+': '+why;const s=getWad(a.from.w),bad=EC.prefabCheck(s.A,s.B,a.from.i);if(bad)throw bad}}}catch(x){Viewer.$('ed_sum').textContent='cannot move: '+x;edUpdate();return}
    P.adds=P.adds.filter(x=>!grp.has(x));const N=WS(nw),first=N.adds.length;for(const a of grp){const keep=a.lk||[];stripLinkRegs(a);a.lk=keep.filter(l=>[...grp].some(y=>y.id===l[1]));N.adds.push(a)}
    Viewer.refresh();const L=lvOf(nw),lv=Viewer.D.find(l=>l.id===L);Viewer.sel=Viewer.all.find(o=>o.L===L&&o.i===lv.nb+first+[...grp].indexOf(a0));Viewer.inspect(Viewer.sel);edUpdate();Viewer.need=true;Viewer.$('ed_sum').textContent='moved '+grp.size+' object(s) to '+nw}}
+const entityEditor=installEntityEditor({
+  Viewer,EC,getProject:()=>PRJ,wadOf,getWad,WS,base,put,unzero,srcEnt,
+  addMaxId:()=>addMaxId(),ensureClass,pushAdds,stripLinkRegs,summary,rmList,r3
+});
+edUpdate=entityEditor.update;
+rec=entityEditor.rec;
+ground=entityEditor.ground;
 const oeu=edUpdate;edUpdate=function(){oeu();try{relvInject()}catch(e){console.error(e)}};
+edUpdate();
 // objects added from another level take their script info from the object they were copied from
 const oscr=Viewer.scr;Viewer.scr=function(e){const x=oscr(e);if(x||!e.added||!Viewer.SCR)return x;const w=wadOf(e.L),a=w&&((PRJ.wads[w]||{}).adds||[])[e.added-1];if(!a)return null;const L2=lvOf(a.from.w),y=Viewer.SCR.levels[L2]&&Viewer.SCR.levels[L2][a.from.i];if(!y)return null;const c=Viewer.SCR.classes[y.k];return c?{c,r:y.r,l:y.l}:null};
 
