@@ -12,6 +12,7 @@ const clipMax=new THREE.Plane(new THREE.Vector3(0,-1,0),1000),clipMin=new THREE.
 renderer.clippingPlanes=[clipMax,clipMin];
 let SCR={classes:{},levels:{},keys:{}},sel=null,mdown=null,tab='3d';
 const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const escAttr=t=>String(t).replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
 function scr(e){if(!SCR)return null;const x=SCR.levels[e.L]&&SCR.levels[e.L][e.i];if(!x)return null;const c=SCR.classes[x.k];return c?{c,r:x.r,l:x.l}:null}
 const byKey=()=>{const m={};for(const e of all)m[e.L+'#'+e.i]=e;return m};
 function regTxt(e,s,k){const lk=s.l.find(a=>a[0]==k);if(lk){if(lk[1]<0)return 'not linked (empty)';const t=byKey()[e.L+'#'+lk[1]];return '\u2192 #'+lk[1]+(t?' '+t.n:'')}return s.r[k]!==undefined?s.r[k]:'@'+k}
@@ -265,19 +266,20 @@ cv.onmousemove=e=>{if(drag){const dx=e.clientX-drag.x,dy=e.clientY-drag.y;drag.x
 cv.ondblclick=e=>{const q=nearest(e.clientX,e.clientY);if(q){camera.position.copy(gworld(q.p)).addScaledVector(fwd(),-Math.max(15,Math.sqrt(q.r)||15));need=true}};
 const fmtP=p=>p.s?'"'+p.s+'"':p.v<65536?String(p.v):(()=>{const f=new Float32Array(new Uint32Array([p.v]).buffer)[0];return isFinite(f)&&Math.abs(f)>1e-4&&Math.abs(f)<1e7?f.toFixed(2)+'f':'0x'+p.v.toString(16)})();
 function inspect(q){const P=$('insp');if(!q){P.style.display='none';return}const s=scr(q),lv=+$('dl').value;P.style.display='block';
- let h='<span class=x onclick="sel=null;inspect(null);need=true">\u2715</span><h3 style="color:'+col(q.n)+'">'+esc(q.n)+(q.to?' \u2192 '+esc(q.to):'')+'</h3><div class=dim>'+q.L+' #'+q.i+' &nbsp; pos '+q.p.join(', ')+' &nbsp; yaw '+(q.r/4096*360).toFixed(0)+'\u00b0</div>';
+ let h='<span class=x data-inspector-close>\u2715</span><h3 style="color:'+col(q.n)+'">'+esc(q.n)+(q.to?' \u2192 '+esc(q.to):'')+'</h3><div class=dim>'+q.L+' #'+q.i+' &nbsp; pos '+q.p.join(', ')+' &nbsp; yaw '+(q.r/4096*360).toFixed(0)+'\u00b0</div>';
  if(!s){h+='<p class=dim>No script info for this entity'+'.</p>'}
  else{const c=s.c,B=byKey();h+='<div>'+c.tags.map(t=>'<span class=tag>'+esc(t)+'</span>').join('')+'</div><p>'+linkText(fill(q,s,c.brief))+'</p>';
   if(s.r.length){h+='<b>Registers</b><table>';s.r.forEach((v,k)=>{const ro=c.roles[k]||{};const lk=s.l.find(a=>a[0]==k);
-   h+='<tr><td>r'+k+'</td><td>'+(lk?'<a onclick="goto_(\''+q.L+'#'+lk[1]+'\')">'+esc(regTxt(q,s,k))+'</a>'+(typeof startLink==='function'?' <a title="pick a different object to link to" onclick="startLink('+k+')">&#8644;</a>':''):esc(v))+'</td><td class=dim>'+esc(ro.note||'')+'</td></tr>'});h+='</table>'}
+   h+='<tr><td>r'+k+'</td><td>'+(lk?'<a data-goto-key="'+escAttr(q.L+'#'+lk[1])+'">'+esc(regTxt(q,s,k))+'</a>':esc(v))+'</td><td class=dim>'+esc(ro.note||'')+'</td></tr>'});h+='</table>'}
   const inc=all.filter(o=>{const t=scr(o);return t&&o.L==q.L&&t.l.some(a=>a[1]==q.i)});
-  if(inc.length)h+='<p><b>Referenced by</b> '+inc.map(o=>'<a onclick="goto_(\''+o.L+'#'+o.i+'\')">#'+o.i+' '+esc(o.n)+'</a>').join(', ')+'</p>';
+  if(inc.length)h+='<p><b>Referenced by</b> '+inc.map(o=>'<a data-goto-key="'+escAttr(o.L+'#'+o.i)+'">#'+o.i+' '+esc(o.n)+'</a>').join(', ')+'</p>';
   if(c.spawns.length)h+='<p><b>Spawns</b> '+c.spawns.map(scrLink).join(', ')+'</p>';
   h+='<p><a data-c="'+esc(c.name)+'">open in Scripts tab</a></p>';
   for(const hd of c.handlers.concat(c.subs)){const t=fill(q,s,hd.t[lv]);h+='<details data-id="'+hd.id+'"'+(hd.id=='entry'||c.handlers.length<3?' open':'')+'><summary>'+esc(hd.id)+' &mdash; '+esc(hd.on)+'</summary><pre>'+(t.trim()?linkText(t):'<span class=dim>(nothing at this detail level)</span>')+'</pre></details>'}
   h+='<div class=dim>Native names are the PS2 catalog names carried over by index; treat non-Strat/Wad/Math/Anim names as hints. @k = this instance\'s init register k.</div>'}
  P.innerHTML=h}
 function goto_(k){const q=byKey()[k];if(!q)return;sel=q;inspect(q);camera.position.copy(gworld(q.p)).addScaledVector(fwd(),-Math.max(15,Math.sqrt(q.r)||15));need=true}
+$('insp').addEventListener('click',e=>{const t=e.target?.closest?.('[data-inspector-close],[data-goto-key]');if(!t)return;if(t.hasAttribute('data-inspector-close')){sel=null;inspect(null);need=true;return}goto_(t.dataset.gotoKey)});
 function tipUpdate(){const c=ggame(camera.position),q=hov;
  $('tip').textContent='cam '+c.map(v=>v.toFixed(1)).join(', ')+'  speed '+speed.toFixed(1)+
   (q?'\n'+q.n+(q.to?' \u2192 '+q.to:'')+'  ['+q.L+' #'+q.i+']\npos '+q.p.join(', ')+'\nyaw '+(q.r/4096*360).toFixed(0)+'\u00b0'+(q.params&&q.params.length?'\nregs '+q.params.slice(0,8).map(fmtP).join('  '):'')+(q.path?'\npath '+q.path.length+' nodes':'')+(()=>{const s=scr(q);if(!s)return'';let o='\n\u2500 '+s.c.tags.join(' \u00b7 ');for(const l of wrap(fill(q,s,s.c.brief),64).slice(0,4))o+='\n  '+l;
@@ -299,59 +301,51 @@ function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;
  requestAnimationFrame(tick)}
 rs();camera.position.set(0,50,100);setCam();requestAnimationFrame(tick);
 
-// Temporary compatibility surface for editor-ui.js and existing inline inspector actions.
-// These accessors keep the module's live bindings authoritative while allowing the legacy
-// script to read and override the small set of viewer symbols it historically shared.
-export function exposeViewerGlobals(target = window) {
-  const bindings = {
-    get $() { return $; },
-    get D() { return D; }, set D(value) { D = value; },
-    get SCR() { return SCR; }, set SCR(value) { SCR = value; },
-    get V3() { return V3; },
-    get addVolumes() { return addVolumes; },
-    get all() { return all; }, set all(value) { all = value; },
-    get buildEnts() { return buildEnts; }, set buildEnts(value) { buildEnts = value; },
-    get camera() { return camera; },
-    get col() { return col; },
-    get cv() { return cv; },
-    get drag() { return drag; }, set drag(value) { drag = value; },
-    get esc() { return esc; },
-    get files() { return files; }, set files(value) { files = value; },
-    get fwd() { return fwd; },
-    get ggame() { return ggame; },
-    get goto_() { return goto_; },
-    get inspect() { return inspect; }, set inspect(value) { inspect = value; },
-    get labels() { return labels; },
-    get levels() { return levels; }, set levels(value) { levels = value; },
-    get loadJson() { return loadJson; }, set loadJson(value) { loadJson = value; },
-    get mdown() { return mdown; }, set mdown(value) { mdown = value; },
-    get mz() { return mz; }, set mz(value) { mz = value; },
-    get nearest() { return nearest; },
-    get need() { return need; }, set need(value) { need = value; },
-    get openClass() { return openClass; },
-    get openFiles() { return openFiles; }, set openFiles(value) { openFiles = value; },
-    get pick() { return pick; },
-    get pitch() { return pitch; }, set pitch(value) { pitch = value; },
-    get refresh() { return refresh; }, set refresh(value) { refresh = value; },
-    get regTxt() { return regTxt; },
-    get root() { return root; },
-    get scr() { return scr; }, set scr(value) { scr = value; },
-    get scrDetail() { return scrDetail; }, set scrDetail(value) { scrDetail = value; },
-    get scrIx() { return scrIx; }, set scrIx(value) { scrIx = value; },
-    get scrSel() { return scrSel; }, set scrSel(value) { scrSel = value; },
-    get scrVar() { return scrVar; }, set scrVar(value) { scrVar = value; },
-    get sel() { return sel; }, set sel(value) { sel = value; },
-    get show() { return show; }, set show(value) { show = value; },
-    get shown() { return shown; },
-    get tab() { return tab; }, set tab(value) { tab = value; },
-    get wrap() { return wrap; },
-    get yaw() { return yaw; }, set yaw(value) { yaw = value; },
-  };
-
-  for (const key of Object.keys(bindings)) {
-    const descriptor = Object.getOwnPropertyDescriptor(bindings, key);
-    Object.defineProperty(target, key, { ...descriptor, configurable: true });
-  }
-  return target;
-}
-
+// Explicit viewer API for sibling ES modules. Accessors preserve live state and
+// controlled function overrides without publishing properties on the browser global.
+const viewerApiBindings = {
+  get $() { return $; },
+  get D() { return D; }, set D(value) { D = value; },
+  get SCR() { return SCR; }, set SCR(value) { SCR = value; },
+  get V3() { return V3; },
+  get addVolumes() { return addVolumes; },
+  get all() { return all; }, set all(value) { all = value; },
+  get buildEnts() { return buildEnts; }, set buildEnts(value) { buildEnts = value; },
+  get camera() { return camera; },
+  get col() { return col; },
+  get cv() { return cv; },
+  get drag() { return drag; }, set drag(value) { drag = value; },
+  get esc() { return esc; },
+  get files() { return files; }, set files(value) { files = value; },
+  get fwd() { return fwd; },
+  get ggame() { return ggame; },
+  get goto_() { return goto_; },
+  get inspect() { return inspect; }, set inspect(value) { inspect = value; },
+  get labels() { return labels; },
+  get levels() { return levels; }, set levels(value) { levels = value; },
+  get loadJson() { return loadJson; }, set loadJson(value) { loadJson = value; },
+  get mdown() { return mdown; }, set mdown(value) { mdown = value; },
+  get mz() { return mz; }, set mz(value) { mz = value; },
+  get nearest() { return nearest; },
+  get need() { return need; }, set need(value) { need = value; },
+  get openClass() { return openClass; },
+  get openFiles() { return openFiles; }, set openFiles(value) { openFiles = value; },
+  get pick() { return pick; },
+  get pitch() { return pitch; }, set pitch(value) { pitch = value; },
+  get refresh() { return refresh; }, set refresh(value) { refresh = value; },
+  get regTxt() { return regTxt; },
+  get root() { return root; },
+  get scr() { return scr; }, set scr(value) { scr = value; },
+  get scrDetail() { return scrDetail; }, set scrDetail(value) { scrDetail = value; },
+  get scrIx() { return scrIx; }, set scrIx(value) { scrIx = value; },
+  get scrSel() { return scrSel; }, set scrSel(value) { scrSel = value; },
+  get scrVar() { return scrVar; }, set scrVar(value) { scrVar = value; },
+  get sel() { return sel; }, set sel(value) { sel = value; },
+  get show() { return show; }, set show(value) { show = value; },
+  get shown() { return shown; },
+  get tab() { return tab; }, set tab(value) { tab = value; },
+  get wrap() { return wrap; },
+  get yaw() { return yaw; }, set yaw(value) { yaw = value; },
+};
+export const Viewer = Object.create(null);
+Object.defineProperties(Viewer, Object.getOwnPropertyDescriptors(viewerApiBindings));
