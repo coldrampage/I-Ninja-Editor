@@ -1,14 +1,16 @@
 // ES-module bootstrap for the staged v18 migration.
-// vol-core.js is a real ES module. The remaining application files are still classic
-// scripts for now, so this bridge exposes the core API on window before loading them.
+// The binary core, editor subsystem and script assembler are modules; the viewer and UI
+// remain classic scripts temporarily and consume the compatibility bridge below.
 import * as Core from './vol-core.js';
+import { EC } from './editor-core.js';
+import { IA } from './strat-assembler.js';
 
-Object.assign(window, Core);
+// Temporary compatibility bridge for the remaining classic-script UI.
+// Core APIs and the two converted subsystems are published only at this boundary.
+Object.assign(window, Core, { EC, IA });
 
 const legacyScripts = [
   './viewer.js',
-  './editor-core.js',
-  './strat-assembler.js',
   './editor-ui.js'
 ];
 

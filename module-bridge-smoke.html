@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>I-Ninja Editor module bridge smoke test — step 2</title>
+<div id="result">waiting</div>
+<script type="module">
+import * as Core from './js/vol-core.js';
+import { EC } from './js/editor-core.js';
+import { IA } from './js/strat-assembler.js';
+
+Object.assign(window, Core, { EC, IA });
+
+const checks = [
+  ['core parser bridge', typeof window.parseVol === 'function'],
+  ['core script metadata bridge', typeof window.SI_OPS === 'object'],
+  ['EC copier API', typeof window.EC?.copierSelfTest === 'function'],
+  ['EC VOL rebuild API', typeof window.EC?.rebuildVol === 'function'],
+  ['IA self-test API', typeof window.IA?.selfTest === 'function'],
+  ['IA relinker API', typeof window.IA?.relink === 'function']
+];
+const failed = checks.filter(([, ok]) => !ok);
+const text = checks.map(([name, ok]) => `${ok ? 'PASS' : 'FAIL'}: ${name}`).join('\n');
+document.getElementById('result').textContent = text;
+document.documentElement.dataset.smoke = failed.length ? 'fail' : 'pass';
+if (failed.length) console.error('Module bridge smoke test failed:', failed);
+else console.info('Module bridge smoke test passed.');
+</script>

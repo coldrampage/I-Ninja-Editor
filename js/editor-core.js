@@ -1,6 +1,9 @@
+import {
+  analyseStrats, SiAn, fixups, parseTga, parseVol,
+  siCstr, siDisasm, siPrint, siWad
+} from './vol-core.js';
 
-
-// ---- editor core (pure, no DOM). Needs parseVol/inflate/readWad/fixups/cstr/siPrint from the viewer core.
+// ---- editor core (pure, no DOM). Its dependencies are explicit module imports.
 const EC=(()=>{
 const fnv=u8=>{let h=2166136261;for(let i=0;i<u8.length;i++){h^=u8[i];h=Math.imul(h,16777619)}return(h>>>0).toString(16).padStart(8,'0')};
 // compressor for the game's LZ format (inverse of inflate()): literal runs <=64, RLE 2..65, matches len 2..17 / dist 2..2049 (never overlapping)
@@ -572,3 +575,5 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
  out.modelGroups=modelGroups;out.modelGroupById=groupById;out.modelMembershipConflicts=membershipConflicts;out.modelRefCount=modelRefs.length;out.modelIndirectRefs=modelRefs.indirectAdded||0;out.modelGraph={chainEdges,possibleNodeEdges,scriptDescriptors:[...scriptDescriptorRoles],descriptorCandidateCount:descriptorCandidates.length,ownerLinked:ownerOf.size,ownerMismatches,policy:'all evidence retained; primary membership is prioritised, never first-claim ownership'};
  return out}
 return{fnv,deflate,packWad,patchLcs,healResDir,SoundPlan,buildPca,bankInfo,rebuildVol,prefabCheck,referrers,parseModels,classReports,KN,parseBank,ResIndex,resResolver,SrcCtx,classify,dataClosure,canon,Builder,copyData,copyGraph,mergeB,copierSelfTest,groupOf,transplantClasses}})();
+
+export { EC };

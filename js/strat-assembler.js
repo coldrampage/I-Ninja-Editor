@@ -1,6 +1,8 @@
 
+import { SI_OPS, SI_CAT, fixups } from './vol-core.js';
+
 // ---- strat assembler + relinker (port of ininja_asm.py / ininja_relink.py). Pure, no DOM.
-// Needs from the viewer core: SI_OPS, SI_CAT, fixups, siCstr (cstr).
+// Opcode and relocation dependencies are explicit module imports.
 const IA=(()=>{
 const M32=0xFFFFFFFF;
 class AsmErr extends Error{}
@@ -254,3 +256,5 @@ function selfTest(A,B){const c=wadCtx(A,B),r={blocks:c.blocks.length,insns:0,rtB
    else if(label==='nops'){const c1=wadCtx(x.A,x.B),y=relink(x.A,x.B,new Map()),v2=verify(c1,y.A,y.B,y.info.relocs);if(v2.bad.length)r.relinkBad.push('generation 2: '+v2.bad.slice(0,2).join('; '))}}catch(e){r.relinkBad.push(label+': '+e.message)}}
  return r}
 return{assembleInsn,parseLine,AsmErr,OPS,wadCtx,extTargets,blockOf,blockText,fmtBlock,fmtInsn,decodeBlock,assembleBlock,parseBlockText,relink,verify,withNops,selfTest,hex,NAT}})();
+
+export { IA };
