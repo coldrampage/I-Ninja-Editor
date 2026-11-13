@@ -201,7 +201,7 @@ function copyData(S,bld,roots,hooks){const cl=dataClosure(S,roots),map=new Map()
  const strs=new Map(),mapT=v=>{if(map.has(v))return map.get(v);const c=cl.objs.get(v);let n;
   if(c.k==='class'){n=hooks.cls(c.name);if(n==null||n<0)throw'class '+c.name+' is not available in the target'}
   else if(c.k==='res'){n=hooks.res(c.type,v);if(n==null)throw'no equivalent of resource type 0x'+c.type.toString(16)+' @'+v.toString(16)+' in the target'}
-  else if(c.k==='str'){if(strs.has(c.s))return strs.get(c.s);n=bld.alloc(c.s.length+2,4)+1;for(let i=0;i<c.s.length;i++)bld.A[n+i]=c.s.charCodeAt(i);strs.set(c.s,n)}
+  else if(c.k==='str'){if(strs.has(c.s))n=strs.get(c.s);else{n=bld.alloc(c.s.length+2,4)+1;for(let i=0;i<c.s.length;i++)bld.A[n+i]=c.s.charCodeAt(i);strs.set(c.s,n)}}
   else throw'unresolvable pointer ('+c.k+') @'+v.toString(16);map.set(v,n);return n};
  for(const o of cl.order){const n=map.get(o.off);bld.A.set(S.A.subarray(o.off,o.off+o.size),n);for(const[p,v]of o.ptrs){bld.W(n+p,mapT(v));bld.addRel(n+p)}}
  for(const r of roots)mapT(r);map.sizes=new Map(cl.order.map(o=>[map.get(o.off),o.size]));return map}
@@ -280,7 +280,7 @@ function copyGraph(S,bld,roots,hooks,opts){opts=opts||{};const A=S.A,U=S.U,relS=
  const mapT=v=>{if(map.has(v))return map.get(v);const c=nodes.get(v);let n;
   if(!c)throw'unresolved pointer @'+v.toString(16);
   if(c.k==='leaf')n=c.n;else if(c.k==='class'){n=hooks.cls(c.name);if(n==null||n<0)throw'class '+c.name+' is not available in the target'}
-  else if(c.k==='str'){if(strs.has(c.s))return strs.get(c.s);n=bld.alloc(c.s.length+2,4)+1;for(let i=0;i<c.s.length;i++)bld.A[n+i]=c.s.charCodeAt(i);strs.set(c.s,n)}
+  else if(c.k==='str'){if(strs.has(c.s))n=strs.get(c.s);else{n=bld.alloc(c.s.length+2,4)+1;for(let i=0;i<c.s.length;i++)bld.A[n+i]=c.s.charCodeAt(i);strs.set(c.s,n)}}
   else if(c.k==='alias')n=map.get(c.parent.off)+c.delta;
   else throw'unresolvable pointer ('+c.k+') @'+v.toString(16);map.set(v,n);return n};
  const recOwner=new Map();for(const g of groups.values())for(const a of g.recs)recOwner.set(a,g);

@@ -75,6 +75,12 @@ const manager = installPrefabManager({
 assert.equal(typeof element('ed_lv').onfocus, 'function', 'prefab target selector receives its discovery handler');
 assert.equal(typeof element('ed_cl').onchange, 'function', 'prefab class selector receives its report handler');
 assert.equal(typeof element('ed_add').onclick, 'function', 'prefab Add button receives its placement handler');
+assert.equal(element('ed_fav_list').onfocus, undefined,
+  'favourite list must not rebuild its options on focus and reset native selection');
+assert.equal(typeof element('ed_fav_list').onchange, 'function', 'favourite selection updates the details panel');
+assert.equal(element('ed_fav_list').onfocus, undefined,
+  'favourite list must not rebuild its options on focus and reset native selection');
+assert.equal(typeof element('ed_fav_list').onchange, 'function', 'favourite selection updates the details panel');
 assert.equal(manager.sourceClass({ from: { w: '10-00.LCS', i: 0 } }), 'TestPrefab');
 assert.equal(manager.addMaxId(), 4, 'new linked-copy IDs start above all project IDs');
 
@@ -191,6 +197,13 @@ await favFile.onchange({ target: favFile });
 assert.equal(project.prefabs.length, 2, 'library import skips duplicate source/name entries');
 assert.equal(project.prefabs[1].name, 'Beach Switch');
 assert.equal(project.prefabs[1].regs[2], 77);
+
+// Selecting an item after the first must remain selected; focus never replaces the options.
+const favouriteList = element('ed_fav_list');
+favouriteList.value = String(project.prefabs[1].id);
+favouriteList.onchange();
+assert.equal(favouriteList.value, String(project.prefabs[1].id), 'selection of a later favourite remains stable');
+assert.match(element('ed_fav_info').textContent, /Switch/, 'details correspond to the later selected favourite');
 
 // Export produces a portable library JSON without embedding game binaries.
 let exportedLibraryText = '';

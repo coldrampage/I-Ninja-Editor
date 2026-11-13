@@ -8,9 +8,9 @@ import { IA } from './strat-assembler.js';
 import { Viewer } from './viewer.js';
 import { installModelEditor } from './models-panel.js';
 import { installScriptEditor } from './script-editor.js';
-import { installProjectManager } from './project-manager.js?v=step12-prefab-source-graphs';
+import { installProjectManager } from './project-manager.js?v=step13-ranxblocker-fav-selection';
 import { installEntityEditor } from './entity-editor.js';
-import { installPrefabManager } from './prefabs.js?v=step12-prefab-source-graphs';
+import { installPrefabManager } from './prefabs.js?v=step13-ranxblocker-fav-selection';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.

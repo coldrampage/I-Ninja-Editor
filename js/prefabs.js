@@ -512,7 +512,9 @@ export function installPrefabManager({
   Viewer.$('ed_fav_export').onclick = downloadLibrary;
   Viewer.$('ed_fav_import').onclick = () => Viewer.$('ed_fav_file').click();
   Viewer.$('ed_fav_file').onchange = importLibrary;
-  Viewer.$('ed_fav_list').onfocus = () => renderFavorites();
+  // Do not rebuild this <select> on focus: replacing its options during the
+  // browser's pointer-selection sequence resets the native selection to item 1.
+  // All library mutations already call renderFavorites() explicitly.
   Viewer.$('ed_fav_list').onchange = () => showFavorite();
   renderFavorites();
 
