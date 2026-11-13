@@ -1,0 +1,63 @@
+<!doctype html><meta charset=utf-8><title>I-Ninja 3D level viewer + editor</title>
+<style>body{margin:0;background:#14161a;color:#ddd;font:12px sans-serif;overflow:hidden}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block}#lbl{position:fixed;inset:0;pointer-events:none}
+#ui{position:fixed;top:0;left:0;bottom:0;overflow:auto;background:#000c;padding:6px;width:250px}
+#ui label{display:block;white-space:nowrap}#ui input[type=number]{width:60px}#ui input[type=range]{width:120px;vertical-align:middle}
+#lv{max-height:180px;overflow:auto;border:1px solid #333;margin:4px 0}
+#tip{position:fixed;right:6px;bottom:6px;background:#000c;padding:6px;white-space:pre;pointer-events:none}#st{color:#fc6;white-space:pre-wrap}
+.h{color:#888}
+#insp{position:fixed;top:6px;right:6px;width:420px;max-height:calc(100% - 90px);overflow:auto;background:#000e;padding:8px;border:1px solid #444;display:none;font-size:12px}
+#insp h3{margin:0 0 4px;font-size:14px}#insp .tag{display:inline-block;background:#234;border:1px solid #468;border-radius:8px;padding:0 6px;margin:1px 2px 1px 0;font-size:11px;color:#9cf}
+#insp table{border-collapse:collapse;width:100%}#insp td{border-top:1px solid #222;padding:1px 4px;vertical-align:top}#insp td:first-child{color:#8a8;white-space:nowrap}
+#insp pre{margin:2px 0 6px;white-space:pre-wrap;font:11px/1.35 monospace;color:#cde;background:#0a0c10;padding:4px;max-height:340px;overflow:auto}
+#insp summary{cursor:pointer;color:#fc6}#insp a{color:#7cf;cursor:pointer;text-decoration:underline}#insp .x{float:right;cursor:pointer;color:#f88}
+#insp .dim{color:#789}
+#tabs{position:fixed;top:0;left:258px;z-index:5;display:flex;gap:2px}#tabs button{background:#000c;color:#ccc;border:1px solid #444;border-top:0;padding:3px 14px;cursor:pointer}#tabs button.on{background:#234;color:#fff;border-color:#68a}
+#scr{position:fixed;top:0;bottom:0;left:250px;right:0;background:#14161a;z-index:3;display:none;padding-top:26px;box-sizing:border-box}
+#scr .col{display:flex;flex-direction:column;border-right:1px solid #333;width:330px;min-width:260px}#scr .tb{padding:6px;border-bottom:1px solid #333}#scr .tb>*{margin:1px 0}#scr input[type=text]{width:95%}
+#slist{overflow:auto;flex:1}#slist .it{padding:3px 8px;border-bottom:1px solid #1d2026;cursor:pointer}#slist .it:hover{background:#1b2230}#slist .it.sel{background:#243044}
+#sdet{flex:1;overflow:auto;padding:10px 14px}#sdet h2{margin:0 0 4px}#sdet a,#scr a{color:#7cf;cursor:pointer;text-decoration:underline}
+#sdet .tag{display:inline-block;background:#234;border:1px solid #468;border-radius:8px;padding:0 6px;margin:1px 2px 1px 0;font-size:11px;color:#9cf}#sdet .dim,#scr .dim{color:#789}#smsg{margin-top:4px;color:#fc6}#insp a,#smsg a{cursor:pointer}
+#sdet table{border-collapse:collapse}#sdet td{border-top:1px solid #222;padding:1px 8px 1px 0;vertical-align:top}#sdet td:first-child{color:#8a8}
+#sdet pre{margin:2px 0 8px;white-space:pre-wrap;font:12px/1.4 monospace;color:#cde;background:#0a0c10;padding:6px;overflow:auto}#sdet summary{cursor:pointer;color:#fc6;margin-top:4px}</style>
+<canvas id=gl></canvas><canvas id=lbl></canvas>
+<div id=ui><b>I-Ninja 3D level viewer</b><br>
+<input type=file id=file accept=".vol,.VOL,.avl,.AVL,.lcm,.LCM,.lcs,.LCS,.xbm,.XBM,.xbs,.XBS,.json" multiple> <button id=dirbtn title="pick the game folder: every .vol in it is loaded and the .avl with the same name (10.vol + 10.avl) is found automatically">open folder...</button><input type=file id=dirpick webkitdirectory multiple hidden>
+<div class=h>or drop one or more .vol (PC) together with their .avl (paired by name: 10.vol + 10.avl), or a whole folder, loose .LCM/.LCS files, or an Xbox .XBM + .XBS pair on the page</div>
+<div id=lv></div><button id=load disabled>Load selected levels</button> <button id=all disabled>all</button> <button id=none disabled>none</button>
+<div id=st></div><hr><div id=ctl style="display:none">
+<button id=fit>fit (F)</button> <button id=top>top (T)</button>
+<label><input type=checkbox id=gm checked> level geometry</label>
+<label>&nbsp;&nbsp;<input type=checkbox id=tx checked> textures &nbsp;<input type=checkbox id=vc checked> vertex colours</label>
+<label>&nbsp;&nbsp;<input type=checkbox id=wf> wireframe</label>
+<label>&nbsp;&nbsp;brightness <input type=range id=br min=.5 max=4 step=.1 value=2></label>
+<label>collision mesh <select id=cm><option value=off>off<option value=wire>wire<option value=solid>solid<option value=ghost>ghost</select></label>
+<label><input type=checkbox id=bx checked> trigger shapes</label>
+<label>&nbsp;&nbsp;<input type=checkbox id=ex> extrude thin 3D regions to level height</label>
+<label>&nbsp;&nbsp;<input type=checkbox id=or> orientation lines (local +Z)</label>
+<label>&nbsp;&nbsp;<input type=checkbox id=pt> waypoint paths (all entities)</label>
+<label><input type=checkbox id=p checked> entity points / map points</label>
+<label><input type=checkbox id=lk> instance link lines (script registers that point at other entities)</label>
+<label><input type=checkbox id=ls> labels: script summary &nbsp;<select id=rf title="only show entities whose script has this role"><option value="">any role</select></label>
+<label>script detail <select id=dl><option value=0>key actions<option value=1 selected>+ conditions<option value=2>everything</select></label>
+<div class=h id=scrst>scripts are analysed from the .LCS wads when you load a level; click an entity to inspect its script.</div>
+<label><input type=checkbox id=l checked> labels &nbsp;dist <input type=number id=ld value=250></label>
+<label><input type=checkbox id=mz checked> mirror Z (game is left-handed)</label>
+<label>FOV <input type=range id=fov min=30 max=110 value=70></label>
+<label>speed <input type=range id=sp min=-1 max=3 step=.05 value=1.8></label>
+<label>near <input type=number id=nr value=.5 step=.5> far <input type=number id=fr value=5000 step=500></label>
+<label>Y min <input type=number id=a value=-1000> max <input type=number id=b value=1000></label>
+<div class=h>right-drag look · WASD/arrows move · Q/E down/up · Shift fast · wheel = speed · left-drag pan · dbl-click entity = fly to</div>
+<hr><b>Entities</b> <button id=na>all</button> <button id=nn>none</button><div id=names></div></div></div>
+<div id=tabs><button id=tb3 class=on>3D view</button><button id=tbs>Scripts</button></div>
+<div id=scr><div class=col><div class=tb><input type=text id=sq placeholder="search name, role, or script text">
+<select id=stg><option value="">any role</option></select> <select id=sso><option value=all>all classes<option value=placed>placed in level data<option value=spawned>spawned only<option value=orphan>not placed or spawned</select>
+<div>detail <select id=sdl><option value=0>key actions<option value=1 selected>+ conditions<option value=2>everything</select> <button id=sall>analyse all levels</button></div><div class=dim id=scount></div><div id=smsg></div></div><div id=slist></div></div><div id=sdet></div></div>
+<div id=insp></div><div id=tip></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="js/three-fallback.js"></script>
+<script id="core" src="js/vol-core.js"></script>
+<script id="app" src="js/viewer.js"></script>
+<script id="editcore" src="js/editor-core.js"></script>
+<script id="asm" src="js/strat-assembler.js"></script>
+<script id="edit" src="js/editor-ui.js"></script>
