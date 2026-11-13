@@ -21,11 +21,19 @@ globalThis.THREE=THREE;
 globalThis.devicePixelRatio=1;globalThis.innerWidth=1200;globalThis.innerHeight=800;
 globalThis.addEventListener=()=>{};globalThis.requestAnimationFrame=()=>1;
 globalThis.performance={now:()=>0};
+// Core/editor/assembler helpers must now come from ES-module imports, not globals.
+const forbiddenCoreGlobals=['parseVol','wadName','readWad','instances','analyseStrats','EC','IA'];
+for(const name of forbiddenCoreGlobals){
+  if(Object.prototype.hasOwnProperty.call(globalThis,name))throw new Error('unexpected core global before viewer import: '+name);
+}
 const ctx={clearRect(){},stroke(){},beginPath(){},arc(){},moveTo(){},lineTo(){},fillRect(){},fillText(){},measureText(){return{width:1}}};
 const elements=new Map();
 function el(id){if(!elements.has(id))elements.set(id,{id,style:{},dataset:{},classList:{toggle(){},add(){},remove(){}},checked:false,value:'',disabled:false,innerHTML:'',textContent:'',width:0,height:0,options:[],selectedOptions:[],children:[],addEventListener(){},getContext(){return ctx},querySelectorAll(){return[]},querySelector(){return null},appendChild(){},closest(){return null}});return elements.get(id);}
 globalThis.document={getElementById:el,querySelectorAll(){return[]},addEventListener(){},createElement(){return el('script')},head:{appendChild(){} }};
 const viewer = await import('../js/viewer.js');
+for(const name of forbiddenCoreGlobals){
+  if(Object.prototype.hasOwnProperty.call(globalThis,name))throw new Error('viewer leaked core global: '+name);
+}
 viewer.exposeViewerGlobals(globalThis);
 const required=['files','levels','D','all','SCR','sel','show','need','camera','root','cv','V3','ggame','buildEnts','refresh','scr','inspect','openFiles','loadJson','scrDetail','scrIx','scrSel','scrVar','addVolumes','nearest','labels','goto_'];
 const missing=required.filter(k=>!(k in globalThis));
@@ -34,6 +42,15 @@ vm.runInThisContext("files = [{name:'bridge-check'}]; sel = {test:true}; refresh
 if(globalThis.files[0].name!=='bridge-check')throw new Error('files identifier setter failed');
 if(!globalThis.sel.test)throw new Error('sel identifier setter failed');
 if(globalThis.refresh()!==42)throw new Error('function identifier setter failed');
+let overlayRefreshes=0;
+if(typeof viewer.setEntityOverlayRefresh!=='function')throw new Error('missing explicit entity overlay refresh hook');
+viewer.setEntityOverlayRefresh(()=>{overlayRefreshes++});
+globalThis.buildEnts();
+if(overlayRefreshes!==1)throw new Error('entity rebuild did not notify the overlay renderer');
+viewer.setEntityOverlayRefresh(null);
+globalThis.buildEnts();
+if(overlayRefreshes!==1)throw new Error('cleared overlay renderer was still called');
+console.log('PASS viewer imports core APIs without global parser/editor/assembler bindings');
 console.log('PASS viewer module initialisation');
 console.log('PASS legacy bridge names: '+required.length);
 console.log('PASS live state and function setters');

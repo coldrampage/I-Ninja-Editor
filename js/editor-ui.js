@@ -1,16 +1,12 @@
 // ES-module entry point for the existing editor UI.
-// The UI implementation below is deliberately kept intact for this migration step.
-// Its existing identifiers resolve through the temporary compatibility surface on
-// window; the following cleanup step will replace those with direct module APIs.
-import { parseVol } from './vol-core.js';
+// Parser, editor and assembler APIs are imported directly. Only the viewer's
+// mutable state still uses a temporary live compatibility interface.
+import {
+  parseVol, wadName, readWad, r2, instances, fixups, vs, siWad, SiAn
+} from './vol-core.js';
 import { EC } from './editor-core.js';
 import { IA } from './strat-assembler.js';
-import { exposeViewerGlobals } from './viewer.js';
-
-// Ensure the bootstrap and this module refer to the same core/editor/assembler APIs.
-if (window.parseVol !== parseVol || window.EC !== EC || window.IA !== IA) {
-  throw new Error('I-Ninja module bridge was not initialised before the editor UI.');
-}
+import { exposeViewerGlobals, setEntityOverlayRefresh } from './viewer.js';
 
 // Viewer state remains module-owned; these live accessors temporarily support the
 // existing UI's reads and controlled overrides without taking snapshots.
@@ -283,7 +279,10 @@ function drawModels(){if(!mgrp)mgrp=new THREE.Group();if(mgrp.parent!==root)root
   const extra=(a.more||[]).flatMap(mm=>(mm.parts||[]).map(x=>geoOf(a.w,x.m,x.p)));let py=q.p[1];
   if(useSnap){const si=snapInfo(xl?ws:w0,q.n);if(snapOk(si,q)){csn=csn||(()=>{const r=[];root.traverse(o=>{if(o.isMesh&&o.userData.kind==='coll')r.push(o)});return r})();const gy=groundY(q.p,csn);if(gy!==null)py=gy+si.off}}
   for(const G of [...list,...extra]){if(!G)continue;const o=new THREE.Mesh(G.g,G.mat);o.position.set(q.p[0],py,q.p[2]);if(q.q){o.quaternion.set(q.q[0],q.q[1],q.q[2],q.q[3]);if(a.ry)o.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new V3(0,1,0),a.ry*Math.PI/180))}mgrp.add(o)}}need=true}
-const obe=buildEnts;buildEnts=()=>{obe();drawModels()};
+// Keep model overlays in sync whenever the viewer rebuilds entity visuals. This is
+// especially important for a copied instance whose model assignment comes from a
+// different source level; the copy should appear immediately without reloading a VOL.
+setEntityOverlayRefresh(drawModels);
 const mp=document.createElement('div');mp.id='md';mp.style.cssText='position:fixed;right:10px;bottom:10px;width:380px;max-height:92vh;overflow:auto;background:#1b1e24f2;border:1px solid #444;padding:6px;display:none;z-index:20;font-size:12px';
 mp.innerHTML='<b>Models</b> <span class=h>mesh parts from a level wad</span> <button id=md_x style=float:right>x</button><br><select id=md_w style="width:100%"></select><input id=md_q type=search placeholder="Filter by part #, name, texture size…" style="box-sizing:border-box;width:100%;margin:4px 0"><select id=md_l size=8 multiple style="width:100%" title="Ctrl/Cmd-click to select multiple parts"></select><div style="display:flex;gap:4px;margin:4px 0"><select id=md_groups style="flex:1;min-width:0" title="Choose any model record, including alternate and unverified evidence groups"><option value="">Choose model record…</option></select><button id=md_usegroup title="Select the exact parts in the chosen model record">preview record</button></div><div class=h>Robot Beach Hub includes your confirmed ranges. Group labels show descriptor addresses and exact part numbers. Grouping sources are now consolidated into one registry; shared/alternate memberships are retained rather than merged or discarded. #51 is a separate &quot;roy foot door&quot; descriptor from the confirmed Kyza door #90; it uses the same texture atlas and is marked as a likely alternate door, not confirmed. Ctrl/Cmd-click to assemble parts.</div><canvas id=md_c width=340 height=240 style="width:340px;height:240px;background:#0d0f12"></canvas><div id=md_i class=h></div><label id=md_rawwrap style=display:none><input type=checkbox id=md_raw> show extracted raw mesh instead of expected debug cube</label><div>extra yaw&deg; <input id=md_r type=number value=0 step=90 style="width:55px"> <button id=md_a title="Save a 3D-view overlay assignment in the editor project">overlay on selected</button> <button id=md_k title="Save a 3D-view overlay assignment for this class">overlay on class</button> <button id=md_n>clear</button></div><div><button id=md_g title="Select the named PC model, collision, attachment or unverified linked group">select model group</button> <button id=md_s>clear part selection</button> <label><input type=checkbox id=md_whole checked> expand one selected part to linked group</label></div><label><input type=checkbox id=md_show checked> draw assigned overlays in the 3D view</label><label title=\"Instances with no manual assignment: follow init-register model pointers (e.g. SwingingObject r0) to a model descriptor\"><input type=checkbox id=md_auto checked> auto-draw models from instance registers (fallback)</label><label title=\"Only classes whose spawn-time script calls Strat_ProbeGround and copies the ground height into PosY are moved; guarded by their init register when the script does so\"><input type=checkbox id=md_snap checked> snap to ground where the script does</label><label title=\"Add the selected parts to this entity/class assignment as another group instead of replacing it\"><input type=checkbox id=md_add> add as extra group (don&#39;t replace)</label><div class=h>Overlay assignments are saved in the project; they do not yet copy mesh/texture resources into the game level.</div>';
 document.body.appendChild(mp);

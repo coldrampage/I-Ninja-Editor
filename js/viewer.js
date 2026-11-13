@@ -1,3 +1,8 @@
+// Viewer renderer and state. Binary/parser helpers are explicit module imports.
+import {
+  parseVol, wadName, readWad, instances, parseLcm, parseColl,
+  mergeBB, bbox, xboxVerts, xboxInstances, analyseStrats, bigbInfo
+} from './vol-core.js';
 
 const $=id=>document.getElementById(id),cv=$('gl'),lc=$('lbl'),lg=lc.getContext('2d');
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true}),scene=new THREE.Scene();scene.background=new THREE.Color(0x14161a);
@@ -14,6 +19,17 @@ function fill(e,s,t){return t.replace(/@(\d+)/g,(m,k)=>regTxt(e,s,+k))}
 function wrap(t,n){const o=[];let l='';for(const w of t.split(' ')){if((l+' '+w).length>n&&l){o.push(l);l=w}else l=l?l+' '+w:w}if(l)o.push(l);return o}
 const shown=e=>show[e.n]&&(!$('rf').value||(()=>{const s=scr(e);return s&&s.c.tags.includes($('rf').value)})());
 let files=[],levels={},D=[],all=[],show={},mats=[],collMat=null,entGroup=null,hov=null,need=true,drag=null;
+// Optional callback for model/overlay geometry owned by the editor UI. Keeping this
+// as an explicit module hook avoids relying on replacing the global buildEnts binding.
+let entityOverlayRefresh = null;
+function notifyEntityOverlayRefresh(){
+ if(typeof entityOverlayRefresh!=='function')return;
+ try{entityOverlayRefresh()}catch(e){console.error('entity overlay refresh failed',e)}
+}
+export function setEntityOverlayRefresh(callback){
+ entityOverlayRefresh=typeof callback==='function'?callback:null;
+}
+
 let yaw=0,pitch=-.6,speed=60,mz=-1;const keys={};
 const col=n=>{let h=0;for(const ch of n)h=(h*31+ch.charCodeAt(0))%360;return'hsl('+h+',85%,60%)'};
 const V3=THREE.Vector3,fwd=()=>{const c=Math.cos(pitch);return new V3(-Math.sin(yaw)*c,Math.sin(pitch),-Math.cos(yaw)*c)};
@@ -54,7 +70,7 @@ function applyView(){const gm=$('gm').checked,cm=$('cm').value,tx=$('tx').checke
  camera.fov=+$('fov').value;camera.near=+$('nr').value||.5;camera.far=+$('fr').value||5000;camera.updateProjectionMatrix();
  speed=Math.pow(10,+$('sp').value);need=true}
 function buildEnts(){if(entGroup){root.remove(entGroup);entGroup.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose()});entGroup=null}
- const vis=all.filter(shown);if(!vis.length){need=true;return}entGroup=new THREE.Group();const C=new THREE.Color();
+ const vis=all.filter(shown);if(!vis.length){need=true;notifyEntityOverlayRefresh();return}entGroup=new THREE.Group();const C=new THREE.Color();
  const P=[],Q=[],seg=(a,z)=>{P.push(a[0],a[1],a[2],z[0],z[1],z[2]);Q.push(C.r,C.g,C.b,C.r,C.g,C.b)};
  const BK=byKey();if($('bx').checked||$('or').checked||$('pt').checked||$('lk').checked){const ed=[[0,1],[1,3],[3,2],[2,0],[4,5],[5,7],[7,6],[6,4],[0,4],[1,5],[2,6],[3,7]],bb=boundsAll();
   for(const e of vis){C.set(col(e.n));
@@ -79,7 +95,7 @@ function buildEnts(){if(entGroup){root.remove(entGroup);entGroup.traverse(o=>{if
   vis.forEach((e,i)=>{C.set(col(e.n));pp.set(e.p,i*3);cc.set([C.r,C.g,C.b],i*3)});
   const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(pp,3));g.setAttribute('color',new THREE.BufferAttribute(cc,3));
   const pt=new THREE.Points(g,new THREE.PointsMaterial({vertexColors:true,size:6,sizeAttenuation:false}));pt.userData.kind='entpts';entGroup.add(pt)}
- root.add(entGroup);applyView()}
+ root.add(entGroup);applyView();notifyEntityOverlayRefresh()}
 function boundsAll(){const b=[1e30,1e30,1e30,-1e30,-1e30,-1e30];const add=q=>{if(!q)return;for(let k=0;k<3;k++){b[k]=Math.min(b[k],q[k]);b[k+3]=Math.max(b[k+3],q[k+3])}};
  for(const l of D){add(l.bb);for(const e of l.ents)add([...e.p,...e.p])}return b[0]>b[3]?null:b}
 function fit(){const b=boundsAll();if(!b)return;const c=[(b[0]+b[3])/2,(b[1]+b[4])/2,(b[2]+b[5])/2],sz=Math.max(b[3]-b[0],b[4]-b[1],b[5]-b[2],10);
