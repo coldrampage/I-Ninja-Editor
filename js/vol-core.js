@@ -368,3 +368,20 @@ function analyseStrats(A,B,classes){const w=siWad(A,B);if(!w)return null;const a
   for(const rg of links[n]||[]){const tgt=w.U(inst.init+4*rg);if(tgt<w.instances.length)l.push([rg,tgt])}return{k:key,r,l}});res.keys=keys;res.modelRefs=az.modelRefs;return res}
 
 function bigbInfo(u8){const d=new DataView(u8.buffer,u8.byteOffset,u8.length);if(u32(d,0)!==0x42474942)throw'not a BIGB wad';let s='';for(let i=0x11;i<0x50&&u8[i];i++)s+=String.fromCharCode(u8[i]);return{ver:u32(d,8),name:s}}
+
+
+// Public API for the first ES-module migration step.
+// Keep the original implementations unchanged; consumers are bridged by bootstrap.js
+// until the remaining classic scripts are converted in later steps.
+export {
+  u32, parseVol, inflate, wadName, readWad, cstr, r2,
+  shapeAt, instances, fixups, parseTga, parseLcm, parseColl,
+  mergeBB, bbox, xboxVerts, xboxInstances,
+  SI_OPS, SI_CAT, SI_PROP, siProp, SI_ARGN, swa,
+  SI_SKIP, SI_L0, SI_L1, SI_L2, siLevel, siParseArgs,
+  siFB, siFnum, siMod, vs, SI_SYM, SI_RMAP, siFold,
+  SI_CMP, SI_NEG, SI_WRITERS, SI_CMPRE,
+  siCstr, siPrint, siWad, siRelTarget, siDecode, siTargets,
+  siDisasm, siRender, SiAn, SI_TAGS, siEventDesc, siEventName,
+  siClass, siInstRegs, siHash, analyseStrats, bigbInfo
+};

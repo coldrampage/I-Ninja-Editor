@@ -302,7 +302,7 @@ function preview(){for(const c of[...sc2.children])sc2.remove(c);const w=$('md_w
 const escM=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function filterM(){const w=$('md_w').value,L=modelsOf(w),sel=$('md_l'),q=$('md_q').value.trim().toLowerCase().replace(/^#/,'');
  for(const o of sel.options){const M=L[+o.value],hay=[o.textContent,o.value,M?.name,M?.modelName,M?.modelInternalName,M?.modelPartLabel,M?.modelReviewNote,M?.modelKind,M?.modelSource,(M?.modelClasses||[]).join(' '),(M?.modelNatives||[]).join(' '),(M?.modelMemberships||[]).map(id=>{const g=L.modelGroupById?.get(id);return(g?.displayName||g?.name||id)+' '+(g?.classes||[]).join(' ')}).join(' '),(M?.modelCandidateGroups||[]).map(id=>L.modelGroupById?.get(id)?.name||id).join(' '),M?.gid,M?.off?.toString(16),M?.poff?.toString(16),M?.tex?M.tex.w+'x'+M.tex.h:''].join(' ').toLowerCase();o.hidden=!!q&&!hay.includes(q)}
- for(const g of sel.children)if(g.tagName==='OPTGROUP')g.hidden=[...g.options].every(o=>o.hidden);
+ for(const g of sel.children)if(g.tagName==='OPTGROUP')g.hidden=[...g.children].every(o=>o.hidden);
  preview()}
 function fillM(){const w=$('md_w').value,L=modelsOf(w),old=new Set([...$('md_l').selectedOptions].map(o=>o.value)),order=[],by=new Map(),groupSel=$('md_groups');mGroupFocus=null;
  const groups=(L.modelGroups||[]).slice().sort((a,b)=>{const ai=Math.min(...(a.parts||[]).map(p=>L.findIndex(M=>M.poff===p.p)).filter(i=>i>=0),999999),bi=Math.min(...(b.parts||[]).map(p=>L.findIndex(M=>M.poff===p.p)).filter(i=>i>=0),999999);return ai-bi||(a.descriptor??0)-(b.descriptor??0)||String(a.id).localeCompare(String(b.id))});
