@@ -8,9 +8,9 @@ import { IA } from './strat-assembler.js';
 import { Viewer } from './viewer.js';
 import { installModelEditor } from './models-panel.js';
 import { installScriptEditor } from './script-editor.js';
-import { installProjectManager } from './project-manager.js?v=step11-prefab-favourites';
+import { installProjectManager } from './project-manager.js?v=step12-prefab-source-graphs';
 import { installEntityEditor } from './entity-editor.js';
-import { installPrefabManager } from './prefabs.js?v=step11-prefab-favourites';
+import { installPrefabManager } from './prefabs.js?v=step12-prefab-source-graphs';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -28,7 +28,8 @@ const ui=document.createElement('div');ui.id='ed';
 ui.innerHTML='<hr><b>Editor</b> <span class=h>edits go in a project file; game files are never touched</span><details style="margin:3px 0"><summary class=h>current scope</summary><div class=h><b>Rotation:</b> yaw, pitch and roll are editable. Yaw turns about world up; pitch (local X) and roll (local Z) are applied on top of the original orientation and shown as changes from it.<br><b>No LCM edits:</b> only .LCS strat data can be edited. The project format is per-wad, so LCM edits can slot in later.</div></details><div style="margin:3px 0"><button id=ed_open>open project</button> <button id=ed_save>save project</button> <button id=ed_patch>build patched .vol</button> <button id=ed_md>models</button> <button id=ed_stb>copier self-test</button></div><input type=file id=ed_pf style=display:none accept=.json><div id=ed_sum class=h></div><div id=ed_rm class=h></div><div id=ed_sel class=h>click an entity to edit it</div>'
   +'<div style="margin-top:4px"><span class=h>add prefab to</span> <select id=ed_lv style="max-width:90px"></select> <select id=ed_cl style="max-width:170px"></select> <button id=ed_add>add</button><br><label class=h title="A spawner links to the objects it spawns. Tick this to copy those objects too, as separate objects that link to each other, so the copy spawns its own set."><input type=checkbox id=ed_deep> also copy the objects it links to</label></div>'
   +'<details id=ed_fav_panel style="margin-top:5px"><summary class=h>Prefab favourites <span id=ed_fav_count>(0)</span></summary>'
-  +'<div class=h>Project-wide library. Favourites reference source game assets; the source VOL must be loaded to place them.</div>'
+  +'<div class=h>Project-wide library. Source .vol/.avl archives are accessed on demand from the game folder.</div>'
+  +'<button id=ed_fav_folder title=\"Grant temporary access to the folder containing the game .vol/.avl files\">set source folder</button> <input id=ed_fav_folder_files type=file webkitdirectory multiple hidden>'
   +'<div style="margin:3px 0"><input id=ed_fav_name type=text placeholder="Favourite name" maxlength=80 style="width:125px"> <input id=ed_fav_category type=text placeholder="Category" maxlength=32 style="width:85px"></div>'
   +'<label class=h title="Copy the source instance\'s linked children too and reconnect links between the copies."><input type=checkbox id=ed_fav_links checked> include linked children</label>'
   +'<button id=ed_fav_save>★ Save selected</button>'
@@ -37,6 +38,8 @@ ui.innerHTML='<hr><b>Editor</b> <span class=h>edits go in a project file; game f
   +'<div style="margin-top:3px"><button id=ed_fav_export>export library</button> <button id=ed_fav_import>import library</button><input id=ed_fav_file type=file accept=.json style=display:none></div>'
   +'<div id=ed_fav_info class=h style="white-space:pre-wrap;margin-top:3px"></div></details>';
 Viewer.$('ctl').insertBefore(ui,Viewer.$('ctl').firstChild);
+Viewer.$('ed_fav_folder').onclick=async()=>{try{Viewer.$('ed_fav_info').textContent=await chooseSourceFolder()}catch(e){if(e&&e.name!=='AbortError')Viewer.$('ed_fav_info').textContent='Could not access source folder: '+e}};
+Viewer.$('ed_fav_folder_files').onchange=e=>{rememberSourceFolderFiles([...e.target.files]);Viewer.$('ed_fav_info').textContent=sourceFolderFiles.size?'Remembered '+sourceFolderFiles.size+' .vol/.avl file(s) from the selected folder. Missing source archives will be loaded when a favourite is placed.':'No .vol/.avl files found in that folder.';e.target.value=''};
 Viewer.$('ed_open').onclick=()=>Viewer.$('ed_pf').click();
 const r3=x=>Math.round(x*1000)/1000,wadOf=L=>Viewer.levels[L]&&Viewer.levels[L].LCS?Viewer.levels[L].LCS.name:null,lvOf=w=>w.replace(/\.LCS$/i,'');
 const isVol=()=>Viewer.files.some(f=>f.vol&&f.buf&&f.buf.byteLength>16&&new DataView(f.buf).getUint32(0,true)===0x544c4f56);
@@ -45,6 +48,117 @@ const isVol=()=>Viewer.files.some(f=>f.vol&&f.buf&&f.buf.byteLength>16&&new Data
 const getWad=w=>{if(WC[w])return WC[w];const f=Viewer.files.find(x=>x.name===w);if(!f)return null;const[A,B]=readWad(f.buf,f);return WC[w]={A,B,cls:new Set(siWad(A,B).classes.map(c=>c.name))}};
 const vbase=n=>String(n||'').replace(/\.(vol|avl)$/i,'').toLowerCase(),volOf=w=>{const f=Viewer.files.find(x=>x.name===w);return f&&f.vol},loadedVols=()=>[...new Set(Viewer.files.filter(f=>f.vol).map(f=>f.vol))];
 const avlOk=v=>!!v&&!!AVLS[vbase(v)];
+// The browser will not reveal the parent directory of a File selected with the
+// ordinary file picker. Keep the File objects returned by a folder selection,
+// and use the File System Access API as an on-demand fallback when a favourite
+// refers to a volume that was not loaded at startup.
+let sourceDirectoryHandle=null,sourceFolderFiles=new Map();
+const archiveName=s=>String(s||'').split('/').pop().toLowerCase();
+function rememberSourceFolderFiles(list){
+ const groups=new Map();
+ for(const f of list||[]){
+  if(!/\.(vol|avl)$/i.test(f.name))continue;
+  const rel=f.webkitRelativePath||f.__relativePath||'';
+  if(!rel)continue;
+  const dir=rel.includes('/')?rel.slice(0,rel.lastIndexOf('/')):'';
+  if(!groups.has(dir))groups.set(dir,new Map());
+  groups.get(dir).set(archiveName(f.name),f);
+ }
+ if(!groups.size)return;
+ const best=[...groups.entries()].sort((a,b)=>{
+  const count=m=>[...m[1].keys()].filter(n=>n.endsWith('.vol')).length;
+  return count(b)-count(a);
+ })[0];
+ if(best&&best[1].size)sourceFolderFiles=best[1]
+}
+async function chooseSourceFolder(){
+ if(typeof window.showDirectoryPicker==='function'){
+  sourceDirectoryHandle=await window.showDirectoryPicker({mode:'read'});
+  return 'source folder access granted for this editor session';
+ }
+ Viewer.$('ed_fav_folder_files').click();
+ return 'choose the game folder in the folder picker';
+}
+async function sourceFolderFile(name){
+ const key=archiveName(name);
+ if(sourceFolderFiles.has(key))return sourceFolderFiles.get(key);
+ if(sourceDirectoryHandle){
+  try{
+   const exact=await sourceDirectoryHandle.getFileHandle(name,{create:false});
+   return await exact.getFile();
+  }catch(e){
+   for await(const [entryName,entry] of sourceDirectoryHandle.entries()){
+    if(entry.kind==='file'&&archiveName(entryName)===key)return await entry.getFile();
+   }
+  }
+ }
+ return null;
+}
+async function sourceFolderVolumes(){
+ const out=[...sourceFolderFiles.entries()].filter(([n])=>n.endsWith('.vol')).map(([,f])=>f);
+ if(sourceDirectoryHandle){
+  for await(const [name,entry] of sourceDirectoryHandle.entries()){
+   if(entry.kind==='file'&&/\.vol$/i.test(name)&&!out.some(f=>archiveName(f.name)===archiveName(name)))out.push(await entry.getFile());
+  }
+ }
+ return out;
+}
+async function registerPairedAvl(volumeName){
+ if(!volumeName)return null;
+ const key=vbase(volumeName);if(AVLS[key])return AVLS[key];
+ const file=await sourceFolderFile(key+'.avl');
+ if(!file)return null;
+ return AVLS[key]={file,name:file.name,buf:null,list:null};
+}
+async function locateVolumeForWad(wadName,preferredVolume){
+ const preferred=preferredVolume||String(wadName).split('-')[0]+'.vol';
+ let file=await sourceFolderFile(preferred);
+ if(file){
+  try{
+   const ab=await file.arrayBuffer(),entries=parseVol(ab);
+   if(entries.some(e=>e.name.toLowerCase()===wadName.toLowerCase()))return {file,ab};
+  }catch(e){}
+ }
+ // Imported favourites can predate the saved volume field, or use a custom
+ // archive name. Scan the selected folder's VOL directory table before reading
+ // the matching archive into the viewer.
+ for(const candidate of await sourceFolderVolumes()){
+  if(file&&archiveName(candidate.name)===archiveName(file.name))continue;
+  const ab=await candidate.arrayBuffer();
+  try{if(parseVol(ab).some(e=>e.name.toLowerCase()===wadName.toLowerCase()))return {file:candidate,ab}}catch(e){}
+ }
+ return null;
+}
+async function ensureSourceArchives(favorite,{targetW}={}){
+ const nodes=Array.isArray(favorite.nodes)&&favorite.nodes.length?favorite.nodes:[{from:favorite.from,vol:favorite.vol}];
+ const wants=new Map();
+ for(const n of nodes){if(n&&n.from&&n.from.w)wants.set(n.from.w,n.vol||favorite.vol||null)}
+ if(targetW){const tf=Viewer.files.find(f=>f.name.toLowerCase()===String(targetW).toLowerCase());if(tf&&tf.vol)wants.set(targetW,tf.vol)}
+ const missingWad=[...wants].some(([wadName,vol])=>!Viewer.files.some(f=>f.name.toLowerCase()===wadName.toLowerCase()&&(!vol||!f.vol||f.vol.toLowerCase()===vol.toLowerCase())));
+ const missingAvl=[...wants].some(([wadName,vol])=>{const f=Viewer.files.find(x=>x.name.toLowerCase()===wadName.toLowerCase()),v=f&&f.vol||vol;return !!v&&!avlOk(v)&&!sourceFolderFiles.has(archiveName(v)+'.avl')});
+ // showDirectoryPicker requires transient user activation. Run it before the
+ // first await in this function, while the Place button's activation is live.
+ if(!sourceDirectoryHandle&&!sourceFolderFiles.size&&(missingWad||missingAvl)&&typeof window.showDirectoryPicker==='function'){
+  sourceDirectoryHandle=await window.showDirectoryPicker({mode:'read'});
+ }
+ for(const [wadName,vol] of wants){
+  const already=Viewer.files.some(f=>f.name.toLowerCase()===wadName.toLowerCase()&&(!vol||!f.vol||f.vol.toLowerCase()===vol.toLowerCase()));
+  if(!already){
+   const found=await locateVolumeForWad(wadName,vol);
+   if(!found)throw 'could not find '+(vol||String(wadName).split('-')[0]+'.vol')+' containing '+wadName+'. Use “set source folder” to grant access to the game folder.';
+   Viewer.addVolumes([{name:found.file.name,ab:found.ab}]);
+   if(!Viewer.files.some(f=>f.name.toLowerCase()===wadName.toLowerCase()&&f.vol&&f.vol.toLowerCase()===found.file.name.toLowerCase()))throw 'loaded '+found.file.name+' but it does not expose '+wadName;
+   WC={};prefabManager.resetCaches();resetModelCaches();
+  }
+  const actual=Viewer.files.find(f=>f.name.toLowerCase()===wadName.toLowerCase());
+  const actualVol=actual&&actual.vol||vol;
+  await registerPairedAvl(actualVol||vol);
+ }
+ // If the target VOL was selected manually, its matching AVL may be in the
+ // same directory even though it was not selected alongside it.
+ if(targetW){const tf=Viewer.files.find(f=>f.name.toLowerCase()===String(targetW).toLowerCase());if(tf&&tf.vol)await registerPairedAvl(tf.vol)}
+ prefabManager.invalidateChecks();
+}
 // the .avl is only read when a patched one has to be built
 async function avlLoad(v){const a=AVLS[vbase(v)];if(!a)throw'no '+vbase(v)+'.avl loaded (it holds the sounds of '+v+')';if(!a.buf){a.buf=await a.file.arrayBuffer();a.list=parseVol(a.buf)}return a}
 // Sound resources live in the .PCA inside a paired .avl. Both prefab dependency
@@ -93,7 +207,7 @@ function linkView(lv,P,x,a,sameLevel,isAdd){const y={...x,r:(x.r||[]).slice(),l:
  return y}
 const orf=Viewer.refresh;Viewer.refresh=()=>{if(!inR){inR=1;try{applyEdits()}finally{inR=0}}orf();edUpdate()};
 // remember the volume's file name; accept project .json through the normal file picker / drop
-const oof=Viewer.openFiles;Viewer.openFiles=async fs=>{fs=[...fs];
+const oof=Viewer.openFiles;Viewer.openFiles=async fs=>{fs=[...fs];rememberSourceFolderFiles(fs);
  // .avl files are paired with the .vol of the same name (10.avl <-> 10.vol); they are only read when a build needs them
  const avls=fs.filter(f=>/\.avl$/i.test(f.name));for(const a of avls)AVLS[vbase(a.name)]={file:a,name:a.name,buf:null,list:null};if(avls.length)prefabManager.invalidateChecks();
  fs=fs.filter(f=>!avls.includes(f));
@@ -118,6 +232,7 @@ const prefabManager=installPrefabManager({
   volOf,avlOk,vbase,WS,r3,sndPlan,summary,
   getGround:()=>ground,
   getEntityRecord:()=>Viewer.sel&&rec(Viewer.sel),
+  ensureSourceArchives,
   updateEntity:()=>edUpdate()
 });
 srcEnt=prefabManager.srcEnt;

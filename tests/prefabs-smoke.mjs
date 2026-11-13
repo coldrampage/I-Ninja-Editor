@@ -44,6 +44,7 @@ wadView.setUint16(lnk, 0, true); wadView.setUint16(lnk + 2, 0, true);
 wadView.setUint16(lnk + 4, 1, true); wadView.setUint16(lnk + 6, 0, true);
 let linkMode = false;
 let selectedRecord = null;
+let archiveEnsures = 0;
 
 const Viewer = {
   D: [level], files: [{name:'10-00.LCS', buf:new ArrayBuffer(1)}], sel: null, all: [],
@@ -66,7 +67,9 @@ const manager = installPrefabManager({
   r3: x => Math.round(x * 1000) / 1000,
   sndPlan: () => undefined, summary() {},
   getGround: () => () => [0, 0, 0],
-  getEntityRecord: () => selectedRecord, updateEntity() {},
+  getEntityRecord: () => selectedRecord,
+  ensureSourceArchives: async (favorite, options) => { archiveEnsures++; assert.match(options.targetW, /^10-0[01]\.LCS$/); },
+  updateEntity() {},
 });
 
 assert.equal(typeof element('ed_lv').onfocus, 'function', 'prefab target selector receives its discovery handler');
@@ -112,6 +115,15 @@ console.log('PASS prefab module exposes dependency, link-cleanup and cache servi
 // source reference, root register/rotation overrides and linked-child preference.
 linkMode = true;
 Viewer.sel = { L: '10-00', i: 0, p: [1, 2, 3], n: 'TestPrefab' };
+// A linked child can carry its own register overrides, rotation and a custom
+// link to a second copied child. These values must survive save/export/place.
+project.wads['10-00.LCS'].mods = {
+  1: { d: [1, 0, -1], dy: 64, dp: 8, dr: 0, regs: { 2: 54321 }, lk: [[0, 77]] }
+};
+project.wads['10-00.LCS'].adds.push({
+  from: { w: '10-00.LCS', i: 1 }, p: [16, 4, 19], dy: 32, dp: 0, dr: 0,
+  regs: { 3: 67890 }, id: 77, lk: []
+});
 selectedRecord = {
   e: source, w: '10-00.LCS',
   m: { dy: 256, dp: 16, dr: -8, regs: { 1: 12345 }, lk: [] }
@@ -126,7 +138,12 @@ assert.equal(project.prefabs[0].name, 'Shielded Ranx');
 assert.equal(project.prefabs[0].category, 'Generators');
 assert.deepEqual(project.prefabs[0].from, { w: '10-00.LCS', i: 0 });
 assert.equal(project.prefabs[0].includeLinked, true);
-assert.equal(project.prefabs[0].linkedCount, 1, 'favourite records the linked-child count');
+assert.equal(project.prefabs[0].linkedCount, 2, 'favourite records the linked-child count including custom linked children');
+assert.equal(project.prefabs[0].nodes.length, 3, 'favourite stores the full linked graph');
+assert.equal(project.prefabs[0].nodes[1].dy, 64, 'favourite captures child rotation edits');
+assert.equal(project.prefabs[0].nodes[1].regs[2], 54321, 'favourite captures child register overrides');
+assert.deepEqual(project.prefabs[0].nodes[1].links, [[0, 2]], 'favourite captures child custom links by graph index');
+assert.equal(project.prefabs[0].nodes[2].regs[3], 67890, 'favourite captures added-child register overrides');
 assert.equal(project.prefabs[0].dy, 256);
 assert.equal(project.prefabs[0].regs[1], 12345);
 assert.deepEqual(project.prefabs[0].fp, { A: 'hash-1024', B: 'hash-1' }, 'favourite stores source fingerprints');
@@ -134,28 +151,35 @@ assert.deepEqual(project.prefabs[0].fp, { A: 'hash-1024', B: 'hash-1' }, 'favour
 // Place from the saved library and verify it uses the existing deep-link copier,
 // retaining root overrides and re-linking the copied child to the new root.
 element('ed_fav_list').value = String(project.prefabs[0].id);
-element('ed_fav_place').onclick();
-const placed = project.wads['10-00.LCS'].adds.slice(-2);
-assert.equal(placed.length, 2, 'placing a favourite copies its linked child');
+await element('ed_fav_place').onclick();
+const placed = project.wads['10-00.LCS'].adds.slice(-3);
+assert.equal(placed.length, 3, 'placing a favourite copies every linked child and custom child');
 assert.equal(placed[0].dy, 256, 'favourite root rotation override is applied');
 assert.equal(placed[0].regs[1], 12345, 'favourite root register override is applied');
 assert.deepEqual(placed[0].lk, [[0, placed[1].id]], 'placed favourite reconnects root to its copied child');
-assert.deepEqual(placed[1].lk, [[0, placed[0].id]], 'placed favourite reconnects child back to root');
+assert.deepEqual(placed[1].lk, [[0, placed[2].id]], 'placed favourite reconnects the edited child to its custom linked child');
+assert.equal(placed[1].dy, 64, 'placed linked child keeps its rotation adjustment');
+assert.equal(placed[1].regs[2], 54321, 'placed linked child keeps its register overrides');
+assert.equal(placed[2].regs[3], 67890, 'placed custom child keeps its own register overrides');
+assert.deepEqual(placed[2].lk, [[0, placed[0].id]], 'placed custom child reconnects to the root');
 
 // The same project-wide favourite can be placed in another compatible level.
 const otherLevel = { id: '10-01', all0: [], ents: [], nb: 0 };
 Viewer.D.push(otherLevel);
 element('ed_lv').value = '10-01';
 element('ed_fav_list').value = String(project.prefabs[0].id);
-element('ed_fav_place').onclick();
+await element('ed_fav_place').onclick();
 const crossLevel = project.wads['10-01.LCS'].adds;
-assert.equal(crossLevel.length, 2, 'favourite can be placed in another loaded level');
+assert.equal(crossLevel.length, 3, 'favourite can be placed in another loaded level with all linked children');
 assert.deepEqual(crossLevel[0].lk, [[0, crossLevel[1].id]], 'cross-level favourite keeps its root-to-child link');
+assert.deepEqual(crossLevel[1].lk, [[0, crossLevel[2].id]], 'cross-level favourite keeps the child-to-child link');
 assert.equal(crossLevel[0].from.w, '10-00.LCS', 'cross-level favourite retains its original source reference');
+assert.equal(crossLevel[1].regs[2], 54321, 'cross-level child register overrides are retained');
+assert.ok(archiveEnsures >= 2, 'favourite placement asks the archive resolver for source and target context');
 
 // Import merges unique source/name recipes and ignores duplicate entries.
 const imported = {
-  app: 'ininja-prefab-library', v: 1,
+  app: 'ininja-prefab-library', v: 2,
   prefabs: [
     { name: 'Shielded Ranx', from: { w: '10-00.LCS', i: 0 } },
     { name: 'Beach Switch', category: 'Switches', sourceName: 'Switch', from: { w: '10-02.LCS', i: 9 }, regs: { 2: 77 } }
@@ -176,23 +200,37 @@ globalThis.setTimeout = callback => { callback(); return 0; };
 element('ed_fav_export').onclick();
 const exportedLibrary = JSON.parse(exportedLibraryText);
 assert.equal(exportedLibrary.app, 'ininja-prefab-library');
+assert.equal(exportedLibrary.v, 2, 'exported libraries use the graph-aware v2 schema');
 assert.equal(exportedLibrary.prefabs.length, 2);
 
+// Round-trip an exported graph recipe through the standalone library importer.
+project.prefabs = [];
+favFile.files = [{ name: 'ininja-prefabs.json', text: async () => exportedLibraryText }];
+await favFile.onchange({ target: favFile });
+const roundTrip = project.prefabs.find(f => f.name === 'Shielded Ranx');
+assert.ok(roundTrip, 'exported graph favourite can be imported into a fresh project');
+assert.equal(roundTrip.nodes.length, 3, 'library round-trip retains every linked graph node');
+assert.equal(roundTrip.nodes[1].regs[2], 54321, 'library round-trip retains child register overrides');
+assert.deepEqual(roundTrip.nodes[1].links, [[0, 2]], 'library round-trip retains child link topology');
+assert.equal(roundTrip.nodes[2].regs[3], 67890, 'library round-trip retains added-child register overrides');
+
 // Removing the selected item only removes the library entry, not placed project objects.
-element('ed_fav_list').value = String(project.prefabs[1].id);
+element('ed_fav_list').value = String(roundTrip.id);
 element('ed_fav_delete').onclick();
-assert.equal(project.prefabs.length, 1, 'remove deletes selected favourite');
+assert.equal(project.prefabs.some(f => f.name === 'Shielded Ranx'), false, 'remove deletes the selected favourite');
 assert.equal(project.wads['10-00.LCS'].adds.length >= 4, true, 'deleting a favourite leaves placed instances intact');
 linkMode = false;
 
-console.log('PASS prefab favourites save root overrides and source fingerprints');
-console.log('PASS prefab favourites place linked copies with rewired relationships');
+console.log('PASS prefab favourites save root and per-child overrides, custom links and source fingerprints');
+console.log('PASS prefab favourites place full child graphs with rewired relationships and per-child registers');
 console.log('PASS prefab library import deduplicates and removal preserves placed objects');
+console.log('PASS prefab library v2 round-trip retains complete child settings and links');
 
 
+const remainingFavorites = project.prefabs.length;
 project.prefabs.push(null, { id: 999, name: 'broken entry' });
 manager.renderFavorites(false);
-assert.equal(project.prefabs.length, 1, 'malformed project favourites are ignored rather than breaking the library UI');
+assert.equal(project.prefabs.length, remainingFavorites, 'malformed project favourites are ignored rather than breaking the library UI');
 console.log('PASS malformed project favourite entries are filtered safely');
 
 console.log('PASS prefab library export writes portable JSON recipes');

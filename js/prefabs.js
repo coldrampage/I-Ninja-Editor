@@ -4,7 +4,7 @@
 export function installPrefabManager({
   Viewer, EC, getProject, wadOf, getWad, readWad, instances, fixups, siWad,
   volOf, avlOk, vbase, WS, r3, sndPlan, summary,
-  getGround, getEntityRecord, updateEntity
+  getGround, getEntityRecord, ensureSourceArchives = async () => {}, updateEntity
 }) {
   let SP = {}, PFI = {}, SCx = {}, PFR = {}, LKC = {}, pfFor = null;
   const lvOf = w => w.replace(/\.LCS$/i, '');
@@ -253,8 +253,9 @@ export function installPrefabManager({
     const sourceText = src
       ? src.n + ' · ' + f.from.w + ' #' + f.from.i
       : (f.sourceName || 'Unknown class') + ' · ' + f.from.w + ' #' + f.from.i + ' (source not loaded)';
+    const graphCount = Array.isArray(f.nodes) && f.nodes.length ? f.nodes.length - 1 : (f.linkedCount || 0);
     const linkText = f.includeLinked
-      ? 'Linked children: ' + (f.linkedCount || 0) + ' (copied when placed)'
+      ? 'Linked children: ' + graphCount + ' (per-child registers and internal links saved)'
       : 'Linked children: not included';
     info.textContent = (message ? message + '\n' : '')
       + sourceText + '\n' + (f.category ? 'Category: ' + f.category + '\n' : '')
@@ -280,7 +281,7 @@ export function installPrefabManager({
     const linkedCount = Math.max(0, linkTree(from.w, from.i).length - 1);
     const hasCustomLinks = !!(H.lk && H.lk.length);
     return {
-      from, source, sourceWad, linkedCount, hasCustomLinks,
+      from, source, sourceWad, linkedCount, hasCustomLinks, record: R,
       dy: Number(H.dy) || 0, dp: Number(H.dp) || 0, dr: Number(H.dr) || 0,
       regs: { ...(H.regs || {}) }
     };
@@ -293,32 +294,39 @@ export function installPrefabManager({
         || recipe.source.n + ' (' + lvOf(recipe.from.w) + ')';
       const category = safeText(Viewer.$('ed_fav_category').value, 32);
       const includeLinked = !!Viewer.$('ed_fav_links').checked;
-      const fp = typeof EC.fnv === 'function'
-        ? { A: EC.fnv(recipe.sourceWad.A), B: EC.fnv(recipe.sourceWad.B) }
-        : null;
-      const notes = [];
-      if (recipe.hasCustomLinks) {
-        notes.push('Custom editor link retargeting on the selected instance is not included; original source links are used.');
+      const graph = captureFavoriteGraph(recipe, includeLinked);
+      const fps = {};
+      for (const node of graph.nodes) {
+        if (fps[node.from.w]) continue;
+        const g = getWad(node.from.w);
+        if (!g) throw 'load the source volume containing ' + node.from.w;
+        fps[node.from.w] = typeof EC.fnv === 'function'
+          ? { A: EC.fnv(g.A), B: EC.fnv(g.B) } : null;
       }
-      if (includeLinked && recipe.linkedCount >= 23) {
-        notes.push('This source reaches the linked-copy walker’s 24-instance safety limit; check whether it has additional linked objects.');
-      }
-      const note = notes.join(' ');
+      const fp = fps[recipe.from.w] || (typeof EC.fnv === 'function'
+        ? { A: EC.fnv(recipe.sourceWad.A), B: EC.fnv(recipe.sourceWad.B) } : null);
+      const nodes = graph.nodes.map(n => ({
+        from: { ...n.from }, vol: n.vol, offset: n.offset.slice(),
+        dy: n.dy, dp: n.dp, dr: n.dr, regs: { ...n.regs },
+        links: n.links.map(x => x.slice())
+      }));
       const favorite = {
         id: nextFavoriteId(), name, category,
         sourceName: recipe.source.n,
         from: recipe.from,
+        vol: volOf(recipe.from.w) || nodes[0]?.vol || null,
         includeLinked,
-        linkedCount: includeLinked ? recipe.linkedCount : 0,
+        linkedCount: includeLinked ? Math.max(0, nodes.length - 1) : 0,
         dy: recipe.dy, dp: recipe.dp, dr: recipe.dr,
         regs: recipe.regs,
-        fp, note
+        fp, fps, nodes,
+        note: graph.truncated ? 'Linked group reached the 24-object safety limit; some linked objects may not be included.' : ''
       };
       library().push(favorite);
       Viewer.$('ed_fav_name').value = '';
       renderFavorites(false);
       Viewer.$('ed_fav_list').value = String(favorite.id);
-      showFavorite('Saved favourite "' + name + '".');
+      showFavorite('Saved favourite "' + name + '" with ' + Math.max(0, nodes.length - 1) + ' linked child setting(s).');
       summary();
     } catch (error) {
       Viewer.$('ed_fav_info').textContent = 'Could not save favourite: ' + error;
@@ -330,58 +338,106 @@ export function installPrefabManager({
       || !Number.isInteger(Number(raw.from.i)) || Number(raw.from.i) < 0) return null;
     const name = safeText(raw.name || raw.sourceName, 80);
     if (!name) return null;
-    const regs = {};
-    if (raw.regs && typeof raw.regs === 'object' && !Array.isArray(raw.regs)) {
-      for (const [key, value] of Object.entries(raw.regs)) {
-        if (/^\d+$/.test(key) && Number.isFinite(Number(value))) regs[key] = Number(value) >>> 0;
+    const cleanRegs = value => {
+      const regs = {};
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        for (const [key, item] of Object.entries(value)) {
+          if (/^\d+$/.test(key) && Number.isFinite(Number(item))) regs[key] = Number(item) >>> 0;
+        }
       }
-    }
+      return regs;
+    };
     const fp = raw.fp && typeof raw.fp.A === 'string' && typeof raw.fp.B === 'string'
       ? { A: raw.fp.A, B: raw.fp.B } : null;
+    const fps = {};
+    if (raw.fps && typeof raw.fps === 'object' && !Array.isArray(raw.fps)) {
+      for (const [wad, hash] of Object.entries(raw.fps)) {
+        if (hash && typeof hash.A === 'string' && typeof hash.B === 'string') {
+          fps[safeText(wad, 128)] = { A: hash.A, B: hash.B };
+        }
+      }
+    }
+    const nodes = [];
+    if (Array.isArray(raw.nodes) && raw.nodes.length > 0 && raw.nodes.length <= 24) {
+      for (const n of raw.nodes) {
+        if (!n || !n.from || typeof n.from.w !== 'string'
+          || !Number.isInteger(Number(n.from.i)) || Number(n.from.i) < 0) { nodes.length = 0; break; }
+        const offset = Array.isArray(n.offset) && n.offset.length === 3 ? n.offset.map(Number) : [0, 0, 0];
+        if (!offset.every(Number.isFinite)) { nodes.length = 0; break; }
+        const links = [];
+        if (Array.isArray(n.links)) for (const edge of n.links) {
+          if (Array.isArray(edge) && edge.length >= 2
+            && Number.isInteger(Number(edge[0])) && Number(edge[0]) >= 0
+            && Number.isInteger(Number(edge[1])) && Number(edge[1]) >= 0
+            && Number(edge[1]) < raw.nodes.length) links.push([Number(edge[0]), Number(edge[1])]);
+        }
+        nodes.push({
+          from: { w: safeText(n.from.w, 128), i: Number(n.from.i) },
+          vol: safeText(n.vol, 128) || null, offset,
+          dy: Number.isFinite(Number(n.dy)) ? Number(n.dy) : 0,
+          dp: Number.isFinite(Number(n.dp)) ? Number(n.dp) : 0,
+          dr: Number.isFinite(Number(n.dr)) ? Number(n.dr) : 0,
+          regs: cleanRegs(n.regs), links
+        });
+      }
+    }
+    // The first graph node must be the same source as the legacy root reference.
+    if (nodes.length && (nodes[0].from.w !== raw.from.w || nodes[0].from.i !== Number(raw.from.i))) nodes.length = 0;
     return {
       id, name, category: safeText(raw.category, 32),
       sourceName: safeText(raw.sourceName || name, 80),
       from: { w: safeText(raw.from.w, 128), i: Number(raw.from.i) },
+      vol: safeText(raw.vol, 128) || null,
       includeLinked: raw.includeLinked !== false,
       linkedCount: Math.max(0, Math.min(1000, Number(raw.linkedCount) || 0)),
       dy: Number.isFinite(Number(raw.dy)) ? Number(raw.dy) : 0,
       dp: Number.isFinite(Number(raw.dp)) ? Number(raw.dp) : 0,
       dr: Number.isFinite(Number(raw.dr)) ? Number(raw.dr) : 0,
-      regs, fp, note: safeText(raw.note, 240)
+      regs: cleanRegs(raw.regs), fp, fps, nodes,
+      note: safeText(raw.note, 240)
     };
   }
 
-  function placeFavorite() {
+  async function placeFavorite() {
     try {
       const favorite = currentFavorite();
       if (!favorite) throw 'select a saved favourite first';
       const targetId = Viewer.$('ed_lv').value, tw = wadOf(targetId);
       if (!targetId || !tw) throw 'select a loaded target level first';
+      await ensureSourceArchives(favorite, { targetW: tw });
       const source = srcEnt({ from: favorite.from });
-      if (!source) throw 'load the source volume containing ' + favorite.from.w;
-      const sourceWad = getWad(favorite.from.w);
-      if (!sourceWad) throw 'load the source volume containing ' + favorite.from.w;
-      if (favorite.fp && typeof EC.fnv === 'function') {
-        const actual = { A: EC.fnv(sourceWad.A), B: EC.fnv(sourceWad.B) };
-        if (actual.A !== favorite.fp.A || actual.B !== favorite.fp.B) {
-          throw 'source ' + favorite.from.w + ' does not match the game data this favourite was saved from';
+      if (!source) throw 'source instance ' + favorite.from.w + ' #' + favorite.from.i + ' could not be read';
+      const checkFingerprint = (wadName, expected) => {
+        if (!expected || typeof EC.fnv !== 'function') return;
+        const g = getWad(wadName);
+        if (!g) throw 'source volume containing ' + wadName + ' is not available';
+        const actual = { A: EC.fnv(g.A), B: EC.fnv(g.B) };
+        if (actual.A !== expected.A || actual.B !== expected.B) {
+          throw 'source ' + wadName + ' does not match the game data this favourite was saved from';
         }
-      }
-      if (tw !== favorite.from.w) {
-        const reason = ensureClass(tw, favorite.from.w, source.n);
-        if (reason) throw 'cannot place ' + source.n + ': ' + reason;
-        const bad = EC.prefabCheck(sourceWad.A, sourceWad.B, favorite.from.i);
-        if (bad) throw 'source instance cannot be copied safely: ' + bad;
-      }
+      };
+      if (favorite.fp) checkFingerprint(favorite.from.w, favorite.fp);
+      for (const [wadName, expected] of Object.entries(favorite.fps || {})) checkFingerprint(wadName, expected);
       const ground = getGround();
       const at = ground(innerWidth / 2, innerHeight / 2, Viewer.sel ? Viewer.sel.p[1] : 0)
         || Viewer.ggame(Viewer.camera.position.clone().addScaledVector(Viewer.fwd(), 25));
-      const add = {
-        from: { ...favorite.from }, p: at.map(r3),
-        dy: favorite.dy || 0, dp: favorite.dp || 0, dr: favorite.dr || 0,
-        regs: { ...(favorite.regs || {}) }
-      };
-      const start = pushAdds(tw, add, { deep: favorite.includeLinked });
+      const start = Array.isArray(favorite.nodes) && favorite.nodes.length
+        ? pushFavoriteGraph(tw, favorite, at)
+        : (() => {
+          const sourceWad = getWad(favorite.from.w);
+          if (!sourceWad) throw 'source volume containing ' + favorite.from.w + ' is not available';
+          if (tw !== favorite.from.w) {
+            const reason = ensureClass(tw, favorite.from.w, source.n);
+            if (reason) throw 'cannot place ' + source.n + ': ' + reason;
+            const bad = EC.prefabCheck(sourceWad.A, sourceWad.B, favorite.from.i);
+            if (bad) throw 'source instance cannot be copied safely: ' + bad;
+          }
+          return pushAdds(tw, {
+            from: { ...favorite.from }, p: at.map(r3),
+            dy: favorite.dy || 0, dp: favorite.dp || 0, dr: favorite.dr || 0,
+            regs: { ...(favorite.regs || {}) }
+          }, { deep: favorite.includeLinked });
+        })();
       Viewer.refresh();
       const level = Viewer.D.find(l => l.id === targetId);
       Viewer.sel = level && Viewer.all.find(o => o.L === targetId && o.i === level.nb + start) || null;
@@ -410,7 +466,7 @@ export function installPrefabManager({
       return;
     }
     const blob = new Blob([JSON.stringify({
-      app: 'ininja-prefab-library', v: 1, prefabs: items
+      app: 'ininja-prefab-library', v: 2, prefabs: items
     }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -426,7 +482,7 @@ export function installPrefabManager({
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (data.app !== 'ininja-prefab-library' || !Array.isArray(data.prefabs)) {
+      if (data.app !== 'ininja-prefab-library' || ![1, 2].includes(data.v) || !Array.isArray(data.prefabs)) {
         throw 'not an I-Ninja prefab library';
       }
       const items = library(), keys = new Set(items.map(f => f.name + '|' + f.from.w + '|' + f.from.i));
@@ -486,6 +542,125 @@ export function installPrefabManager({
       }
     }
     return out;
+  }
+
+  // Capture the live linked prefab, not just the source's original link tree.
+  // Register changes and link retargets on original children and copied children
+  // are stored per node, with links expressed as indices within this portable graph.
+  function captureFavoriteGraph(recipe, includeLinked) {
+    const project = getProject(), nodes = [], byKey = new Map(), queue = [];
+    let truncated = false;
+    const rootRecord = recipe.record, rootPosition = rootRecord.e.p.slice();
+    const sourceWadOf = w => volOf(w) || String(w).split('-')[0] + '.vol';
+    const addNode = (key, from, position, H, kind, ownerW) => {
+      if (byKey.has(key)) return byKey.get(key);
+      if (nodes.length >= 24) { truncated = true; return -1; }
+      const idx = nodes.length;
+      byKey.set(key, idx);
+      nodes.push({
+        from: { w: from.w, i: +from.i }, vol: sourceWadOf(from.w),
+        offset: position.map((v, k) => r3(v - rootPosition[k])),
+        dy: Number(H.dy) || 0, dp: Number(H.dp) || 0, dr: Number(H.dr) || 0,
+        regs: { ...(H.regs || {}) }, links: []
+      });
+      queue.push({ idx, kind, ownerW, from: { w: from.w, i: +from.i }, H });
+      return idx;
+    };
+    const addOriginal = (w, i, override) => {
+      const key = 'o|' + w + '#' + i;
+      if (byKey.has(key)) return byKey.get(key);
+      const src = srcEnt({ from: { w, i } });
+      if (!src) return -1;
+      const H = override || (((project.wads || {})[w] || {}).mods || {})[i] || {};
+      const d = H.d || [0, 0, 0], position = src.p.map((v, k) => v + (Number(d[k]) || 0));
+      return addNode(key, { w, i }, position, H, 'original', w);
+    };
+    const addAdded = (ownerW, a, index) => {
+      const key = 'a|' + ownerW + '#' + (a.id === undefined ? index : a.id);
+      if (byKey.has(key)) return byKey.get(key);
+      const src = srcEnt(a);
+      if (!src) return -1;
+      return addNode(key, a.from, a.p.slice(), a, 'added', ownerW);
+    };
+    const findAdded = (w, id) => {
+      const adds = (((project.wads || {})[w] || {}).adds || []);
+      const index = adds.findIndex(a => a.id !== undefined && String(a.id) === String(id));
+      return index < 0 ? null : { a: adds[index], index };
+    };
+
+    const rootIndex = rootRecord.add
+      ? addAdded(rootRecord.w, rootRecord.add, rootRecord.e.added - 1)
+      : addOriginal(recipe.from.w, recipe.from.i, rootRecord.m);
+    if (rootIndex < 0) throw 'could not capture the selected prefab root';
+    if (!includeLinked) return { nodes: [nodes[rootIndex]], truncated: false };
+
+    for (let q = 0; q < queue.length; q++) {
+      const item = queue[q], L = srcLinks(item.from.w);
+      if (!L) continue;
+      const sourceIndex = item.from.i, ip = L.U(L.ins + sourceIndex * 0x3c + 0x2c);
+      for (const [owner, rg] of L.rows) {
+        if (owner !== sourceIndex) continue;
+        let child = -1;
+        const customLink = (item.H.lk || []).find(edge => +edge[0] === rg);
+        if (customLink) {
+          const found = findAdded(item.ownerW || item.from.w, customLink[1]);
+          if (found) child = addAdded(item.ownerW || item.from.w, found.a, found.index);
+        } else {
+          let target;
+          if (item.H.regs && item.H.regs[rg] !== undefined) target = Number(item.H.regs[rg]) >>> 0;
+          else if (item.kind === 'added' && item.ownerW && item.ownerW !== item.from.w) {
+            // A cross-level copy has no valid inherited instance links unless the
+            // user explicitly reconnected them in the destination level.
+            continue;
+          } else target = L.U(ip + 4 * rg);
+          const targetW = item.kind === 'added' ? (item.ownerW || item.from.w) : item.from.w;
+          const targetL = targetW === item.from.w ? L : srcLinks(targetW);
+          if (targetL && target < targetL.nin) child = addOriginal(targetW, target);
+        }
+        if (child >= 0) nodes[item.idx].links.push([rg, child]);
+      }
+    }
+    return { nodes, truncated };
+  }
+
+  function pushFavoriteGraph(tw, favorite, at) {
+    const nodes = favorite.nodes, P = WS(tw), base = P.adds.length;
+    if (!Array.isArray(nodes) || !nodes.length || nodes.length > 24) throw 'invalid favourite linked-object graph';
+    // Validate all source classes and dependencies before adding any prefab
+    // instances. Roll back dependency entries if a later child is not copyable.
+    const oldClassCount = P.classes.length;
+    try {
+      nodes.forEach(node => {
+        const src = srcEnt({ from: node.from }), g = getWad(node.from.w);
+        if (!src || !g) throw 'source instance ' + node.from.w + ' #' + node.from.i + ' is unavailable';
+        if (tw !== node.from.w) {
+          const reason = ensureClass(tw, node.from.w, src.n);
+          if (reason) throw 'cannot place child ' + src.n + ': ' + reason;
+          const bad = EC.prefabCheck(g.A, g.B, node.from.i);
+          if (bad) throw 'child ' + src.n + ' cannot be copied safely: ' + bad;
+        }
+      });
+    } catch (error) {
+      P.classes.splice(oldClassCount);
+      throw error;
+    }
+    let id = addMaxId();
+    const recs = nodes.map((node, i) => ({
+      from: { ...node.from },
+      p: at.map((v, k) => r3(v + (node.offset[k] || 0))),
+      dy: node.dy || 0, dp: node.dp || 0, dr: node.dr || 0,
+      regs: { ...(node.regs || {}) }, id: ++id, lk: []
+    }));
+    nodes.forEach((node, i) => {
+      for (const edge of node.links || []) {
+        const rg = +edge[0], target = +edge[1];
+        if (!Number.isInteger(rg) || rg < 0 || !Number.isInteger(target) || target < 0 || target >= recs.length) continue;
+        recs[i].lk.push([rg, recs[target].id]);
+      }
+    });
+    P.adds.push(...recs);
+    Viewer.$('ed_sum').textContent = 'placed favourite graph: ' + recs.length + ' linked object(s)';
+    return base;
   }
 
   const addMaxId = () => Math.max(0, ...Object.values(getProject().wads || {})
@@ -618,6 +793,7 @@ export function installPrefabManager({
   return {
     srcEnt, sourceClass, ensureClass, pushAdds, stripLinkRegs, addMaxId,
     injectMoveControl, resetCaches, invalidateChecks,
+    captureFavoriteGraph, pushFavoriteGraph,
     fillPrefabs, showRep, renderFavorites, saveFavorite, placeFavorite
   };
 }
