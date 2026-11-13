@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizePath, normalizePathMap, movePathNode, insertDuplicatePathNode } from '../js/path-editor.js';
+import { normalizePath, normalizePathMap, movePathNode, insertDuplicatePathNode, deletePathNode } from '../js/path-editor.js';
 
 const source = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
 assert.deepEqual(normalizePath(source), source);
@@ -13,11 +13,25 @@ assert.deepEqual(insertDuplicatePathNode(source, 1), {
 assert.deepEqual(insertDuplicatePathNode(source, 2, [0, 1, 2]).path,
   [[1, 2, 3], [4, 5, 6], [7, 8, 9], [7, 8, 9]],
   'insertion after the final node appends a duplicate');
+assert.deepEqual(deletePathNode(source, 1), {
+  path: [[1, 2, 3], [7, 8, 9]], pathMap: [0, 2], selectedIndex: 1,
+}, 'deleting a middle waypoint joins the previous node directly to the next and selects the next node');
+assert.deepEqual(deletePathNode(source, 2, [0, 1, 2]), {
+  path: [[1, 2, 3], [4, 5, 6]], pathMap: [0, 1], selectedIndex: 1,
+}, 'deleting the tail selects the new tail');
+assert.deepEqual(deletePathNode(source, 0, [0, 1, 2]), {
+  path: [[4, 5, 6], [7, 8, 9]], pathMap: [1, 2], selectedIndex: 0,
+}, 'deleting the head selects the new head and retains original source indices');
+assert.deepEqual(deletePathNode([[0, 0, 0], [1, 1, 1], [2, 2, 2]], 1, [0, 1, 3]), {
+  path: [[0, 0, 0], [2, 2, 2]], pathMap: [0, 3], selectedIndex: 1,
+}, 'path maps may keep references to higher original indices after deletion');
 assert.throws(() => normalizePath([]), /1 to 64/);
 assert.throws(() => normalizePath(Array.from({ length: 65 }, () => [0, 0, 0])), /1 to 64/);
 assert.throws(() => movePathNode(source, 99, 0, 0), /Invalid waypoint/);
 assert.throws(() => movePathNode(source, 0, 3, 0), /Invalid waypoint/);
 assert.throws(() => insertDuplicatePathNode(source, -1), /insertion index/);
+assert.throws(() => deletePathNode(source, -1), /deletion index/);
+assert.throws(() => deletePathNode([[0, 0, 0]], 0), /at least one node/);
 assert.throws(() => normalizePathMap([0, 3], 2, 3), /source-node map/);
 assert.throws(() => insertDuplicatePathNode(Array.from({ length: 64 }, () => [0, 0, 0]), 0), /64 nodes/);
-console.log('PASS waypoint path validation, immutable node edits, and duplicate insertion');
+console.log('PASS waypoint path validation, immutable node edits, duplicate insertion and safe node deletion');

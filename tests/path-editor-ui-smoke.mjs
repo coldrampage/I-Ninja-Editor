@@ -16,6 +16,8 @@ const controls = {
   '#ed_path': { open: true, ontoggle: null },
   '#ed_path_reset': { disabled: false, onclick: null },
   '#ed_path_insert': { disabled: false, onclick: null },
+  '#ed_path_delete': { disabled: false, onclick: null },
+  '#ed_path_delete_hint': { textContent: '' },
   '#ed_path_insert_hint': { textContent: '' },
   '#ed_path_status': { textContent: '' },
 };
@@ -47,11 +49,20 @@ editor.render(container, q, R);
 assert.match(markup, /Waypoint path · 2 nodes/);
 assert.match(markup, /data-path-node="1"/, 'each node has numeric coordinate controls');
 assert.match(markup, /insert duplicate after selected/);
+assert.match(markup, /delete selected node/);
 assert.equal(typeof inputs[0].onchange, 'function');
 assert.equal(typeof controls['#ed_path_reset'].onclick, 'function');
 assert.equal(typeof controls['#ed_path_insert'].onclick, 'function');
+assert.equal(typeof controls['#ed_path_delete'].onclick, 'function');
 
-// Select the second point, then duplicate it immediately after itself.
+// Delete the selected tail node. The remaining path must stay valid.
+selectButtons[1].onclick();
+assert.equal(controls['#ed_path_delete_hint'].textContent, 'removes node 2', 'selection updates deletion hint');
+controls['#ed_path_delete'].onclick();
+assert.deepEqual(committed, [[0, 0, 0]], 'UI deletes the selected waypoint');
+assert.deepEqual(committedMap, [0], 'deletion removes the matching source-node template');
+
+// Select the second point again, then duplicate it immediately after itself.
 selectButtons[1].onclick();
 assert.equal(controls['#ed_path_insert_hint'].textContent, 'inserts after node 2', 'selection updates insertion hint');
 controls['#ed_path_insert'].onclick();
@@ -87,4 +98,4 @@ assert.equal(committed[1][1], 12.5, 'numeric waypoint coordinate edits commit');
 controls['#ed_path_reset'].onclick();
 assert.equal(committed, null, 'reset removes the project path override');
 assert.equal(committedMap, null, 'reset also clears the path template map');
-console.log('PASS waypoint path inspector, duplicate insertion, numeric editing, 3D axis handles and reset');
+console.log('PASS waypoint path inspector, insertion, deletion, numeric editing, 3D axis handles and reset');

@@ -92,8 +92,20 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
     W(t+4,k+1<targets.length?targets[k+1]:0);if(k+1<targets.length)addRel(t+4);
    });
    const originalCurrentIndex=Math.max(0,cur);
-   const mappedCurrentIndex=templates.indexOf(originalCurrentIndex);
-   const targetIndex=mappedCurrentIndex<0?0:mappedCurrentIndex;
+   let targetIndex=templates.indexOf(originalCurrentIndex);
+   // If the current waypoint was deleted, keep the entity on the nearest
+   // surviving source node. Prefer the preceding node on an equal-distance
+   // tie; this mirrors deleting a selected point from the ordered path.
+   if(targetIndex<0){
+    let bestDistance=Infinity,bestSource=Infinity;
+    for(let k=0;k<templates.length;k++){
+     const sourceIndex=templates[k],distance=Math.abs(sourceIndex-originalCurrentIndex);
+     if(distance<bestDistance||(distance===bestDistance&&(sourceIndex<bestSource||(sourceIndex===bestSource&&k<targetIndex)))){
+      bestDistance=distance;bestSource=sourceIndex;targetIndex=k;
+     }
+    }
+   }
+   if(targetIndex<0)targetIndex=0;
    W(instanceOff+0x30,targets[Math.min(targetIndex,targets.length-1)]);addRel(instanceOff+0x30);
   }
   positions.forEach((p,k)=>{

@@ -13,11 +13,18 @@ export function normalizePath(path) {
   return path.map(p => p.slice(0, 3).map(r3));
 }
 
-export function normalizePathMap(pathMap, pathLength, sourceLength = pathLength) {
+export function normalizePathMap(pathMap, pathLength, sourceLength = null) {
   if (pathMap == null) return Array.from({ length: pathLength }, (_, i) => i);
-  if (!Array.isArray(pathMap) || pathMap.length !== pathLength
-    || !Number.isInteger(sourceLength) || sourceLength < 1
-    || pathMap.some(i => !Number.isInteger(i) || i < 0 || i >= sourceLength)) {
+  if (!Array.isArray(pathMap)) throw new Error('Invalid waypoint source-node map');
+  // After node deletion a surviving node can still map to a higher index in
+  // the original source chain. Infer the minimum source length when the caller
+  // does not know the original chain length; the binary serializer performs
+  // the final strict bounds check against the actual source chain.
+  const inferredSourceLength = Number.isInteger(sourceLength) ? sourceLength
+    : Math.max(pathLength, ...pathMap.filter(Number.isInteger).map(i => i + 1));
+  if (pathMap.length !== pathLength
+    || !Number.isInteger(inferredSourceLength) || inferredSourceLength < 1
+    || pathMap.some(i => !Number.isInteger(i) || i < 0 || i >= inferredSourceLength)) {
     throw new Error('Invalid waypoint source-node map');
   }
   return pathMap.slice();
@@ -46,6 +53,21 @@ export function insertDuplicatePathNode(path, selectedIndex, pathMap = null) {
   next.splice(insertAt, 0, next[selectedIndex].slice());
   map.splice(insertAt, 0, map[selectedIndex]);
   return { path: next, pathMap: map, insertedIndex: insertAt };
+}
+
+// Remove the selected waypoint while keeping at least one node in the chain.
+// If the selected node is the tail, focus moves to the new tail; otherwise the
+// node that followed it takes the same index and becomes selected.
+export function deletePathNode(path, selectedIndex, pathMap = null) {
+  const next = normalizePath(path);
+  if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= next.length) {
+    throw new Error('Invalid waypoint deletion index');
+  }
+  if (next.length <= 1) throw new Error('Waypoint paths must keep at least one node');
+  const map = normalizePathMap(pathMap, next.length);
+  next.splice(selectedIndex, 1);
+  map.splice(selectedIndex, 1);
+  return { path: next, pathMap: map, selectedIndex: Math.min(selectedIndex, next.length - 1) };
 }
 
 export function installPathEditor({ Viewer, commit, setOverlayRender = () => {} }) {
@@ -81,6 +103,7 @@ export function installPathEditor({ Viewer, commit, setOverlayRender = () => {} 
       `<div class="h">X = red · Y = green · Z = blue</div>` +
       `<div style="margin-top:4px">${rows}</div>` +
       `<div style="margin-top:4px"><button id="ed_path_insert" ${path.length >= 64 ? 'disabled' : ''}>insert duplicate after selected</button> <span class="h" id="ed_path_insert_hint">${path.length >= 64 ? '64-node game limit reached' : `inserts after node ${focusNode + 1}`}</span></div>` +
+      `<div style="margin-top:4px"><button id="ed_path_delete" ${path.length <= 1 ? 'disabled' : ''}>delete selected node</button> <span class="h" id="ed_path_delete_hint">${path.length <= 1 ? 'a path must keep at least one node' : `removes node ${focusNode + 1}`}</span></div>` +
       `<div id="ed_path_status" class="h" style="margin-top:3px"></div>` +
       `<div style="margin-top:4px"><button id="ed_path_reset" ${H.path ? '' : 'disabled'}>reset path</button> <span class="h">${H.path ? 'project override active' : 'original game path'}</span></div>` +
       `</details>`);
@@ -96,6 +119,11 @@ export function installPathEditor({ Viewer, commit, setOverlayRender = () => {} 
       }
       const hint = container.querySelector('#ed_path_insert_hint');
       if (hint && path.length < 64) hint.textContent = 'inserts after node ' + (focusNode + 1);
+      const deleteButton = container.querySelector('#ed_path_delete');
+      if (deleteButton) deleteButton.disabled = path.length <= 1;
+      const deleteHint = container.querySelector('#ed_path_delete_hint');
+      if (deleteHint) deleteHint.textContent = path.length <= 1
+        ? 'a path must keep at least one node' : 'removes node ' + (focusNode + 1);
       Viewer.need = true;
     };
     for (const button of container.querySelectorAll('[data-path-select]')) {
@@ -117,6 +145,17 @@ export function installPathEditor({ Viewer, commit, setOverlayRender = () => {} 
       try {
         const result = insertDuplicatePathNode(path, focusNode, pathMap);
         focusNode = result.insertedIndex;
+        commit(q, result.path, result.pathMap);
+      } catch (error) {
+        const status = container.querySelector('#ed_path_status');
+        if (status) status.textContent = String(error.message || error);
+      }
+    };
+    const remove = container.querySelector('#ed_path_delete');
+    if (remove) remove.onclick = () => {
+      try {
+        const result = deletePathNode(path, focusNode, pathMap);
+        focusNode = result.selectedIndex;
         commit(q, result.path, result.pathMap);
       } catch (error) {
         const status = container.querySelector('#ed_path_status');

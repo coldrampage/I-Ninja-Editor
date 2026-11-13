@@ -112,8 +112,40 @@ for (const f of files.filter(x => /\.LCS$/i.test(x.name))) {
         `inserted duplicate preserves node template metadata at +0x${offset.toString(16)}`);
     }
   }
+
+  // Deleting the node currently referenced by the instance must re-home the
+  // pointer to the nearest surviving source node (prefer previous on a tie).
+  const deletedIndex = originalCurrentIndex;
+  const deletedPath = local.filter((_, i) => i !== deletedIndex);
+  const deletedMap = local.map((_, i) => i).filter(i => i !== deletedIndex);
+  const deletedOut = EC.patchLcs(A, B, {
+    mods: { [source.i]: { path: deletedPath, pathMap: deletedMap } }
+  }, f.name, () => null, {});
+  const deletedParsed = instances(deletedOut.A, deletedOut.B).find(e => e.i === source.i);
+  assert.equal(deletedParsed.path.length, source.path.length - 1, 'deleted waypoint is omitted from rebuilt path');
+  const deletedImp = fixups(deletedOut.B), deletedHeader = (deletedImp[0x8000010e] || [])[0];
+  const deletedView = new DataView(deletedOut.A.buffer, deletedOut.A.byteOffset, deletedOut.A.byteLength);
+  const UD = o => deletedView.getUint32(o, true);
+  const deletedIns = UD(deletedHeader + 0x28);
+  const deletedPointer = UD(deletedIns + source.i * 0x3c + 0x30);
+  let deletedHead = deletedPointer, seenBack = new Set();
+  while (UD(deletedHead) && !seenBack.has(deletedHead)) { seenBack.add(deletedHead); deletedHead = UD(deletedHead); }
+  const deletedNodes = [], seenForward = new Set();
+  for (let node = deletedHead; node && !seenForward.has(node); node = UD(node + 4)) {
+    seenForward.add(node); deletedNodes.push(node);
+  }
+  assert.equal(deletedNodes.length, deletedPath.length, 'deleted path has a rebuilt linked list with the reduced node count');
+  const expectedCurrentSource = deletedIndex > 0 ? deletedIndex - 1 : deletedIndex + 1;
+  const expectedCurrentOutput = deletedMap.indexOf(expectedCurrentSource);
+  assert.ok(expectedCurrentOutput >= 0, 'nearest surviving node is available');
+  assert.equal(deletedPointer, deletedNodes[expectedCurrentOutput],
+    'deleting the current waypoint moves the entity current-node pointer to its nearest surviving neighbour');
+  deletedNodes.forEach((node, i) => {
+    assert.equal(UD(node), deletedNodes[i - 1] || 0, 'deleted chain previous links are rebuilt');
+    assert.equal(UD(node + 4), deletedNodes[i + 1] || 0, 'deleted chain next links are rebuilt');
+  });
   done = true;
-  console.log('PASS real LCS waypoint insertion serialization:', f.name, source.n, source.path.length, 'source nodes');
+  console.log('PASS real LCS waypoint insertion/deletion serialization:', f.name, source.n, source.path.length, 'source nodes');
   break;
 }
 assert.ok(done, 'could not find an LCS with an insertable waypoint path');

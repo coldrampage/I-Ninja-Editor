@@ -1,5 +1,5 @@
 import { installTriggerEditor } from './trigger-editor.js?v=step16-cylinder-resize';
-import { installPathEditor } from './path-editor.js?v=step18-waypoint-insert';
+import { installPathEditor } from './path-editor.js?v=step19-waypoint-delete';
 // Entity inspector, transforms, register editing, link reassignment and entity copy/paste.
 // All application state and cross-feature operations are injected by the coordinator.
 export function installEntityEditor({

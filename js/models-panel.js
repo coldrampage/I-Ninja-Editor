@@ -1,6 +1,6 @@
 // Models panel: browsing parsed meshes, previewing and assigning 3D overlays.
 import { siWad, SiAn } from './vol-core.js';
-import { setEntityOverlayRefresh } from './viewer.js?v=step18-waypoint-insert';
+import { setEntityOverlayRefresh } from './viewer.js?v=step19-waypoint-delete';
 
 export function installModelEditor({Viewer, THREE, EC, getProject, getWad, wadOf, summary}) {
 // ---- models: browse the object meshes of any strat wad, assign one to an entity (or a class) so it is drawn in the 3D view; assignments are saved in the project
