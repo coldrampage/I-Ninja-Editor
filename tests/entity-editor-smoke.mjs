@@ -96,19 +96,21 @@ assert.equal(entity.shape, 4, 'trigger edit updates the live entity type');
 assert.deepEqual(entity.b, [6, 0, 7, 10, 4, 11], 'trigger bounds remain attached to the moved entity');
 assert.equal(typeof Viewer.triggerOverlay, 'function', 'entity editor injects the trigger viewport overlay callback');
 assert.equal(typeof Viewer.pathOverlay, 'function', 'entity editor injects the waypoint viewport overlay callback');
-editor.setPath(entity, [[9, 4, 9], [12, 5, 15]]);
-assert.deepEqual(project.wads['10-00.LCS'].mods[0].path, [[1, 2, 0], [4, 3, 6]],
+editor.setPath(entity, [[9, 4, 9], [12, 5, 15], [12, 5, 15]], [0, 1, 1]);
+assert.deepEqual(project.wads['10-00.LCS'].mods[0].path, [[1, 2, 0], [4, 3, 6], [4, 3, 6]],
   'waypoint edits are stored relative to the owning entity');
-assert.deepEqual(entity.path, [[9, 4, 9], [12, 5, 15]], 'waypoint editing updates the live entity path');
+assert.deepEqual(project.wads['10-00.LCS'].mods[0].pathMap, [0, 1, 1], 'inserted waypoint keeps the source node it duplicates');
+assert.deepEqual(entity.path, [[9, 4, 9], [12, 5, 15], [12, 5, 15]], 'waypoint editing updates the live entity path');
 editor.setPosition(entity, [9, 3, 10]);
-assert.deepEqual(entity.path, [[10, 5, 10], [13, 6, 16]], 'waypoint edits stay attached when the entity is moved');
+assert.deepEqual(entity.path, [[10, 5, 10], [13, 6, 16], [13, 6, 16]], 'waypoint edits stay attached when the entity is moved');
 
 editor.copy();
 editor.paste([10, 2, 11]);
 assert.equal(project.wads['10-00.LCS'].adds.length, 1, 'paste should create a project-added instance');
 assert.deepEqual(project.wads['10-00.LCS'].adds[0].p, [10, 2, 11], 'paste should preserve the requested placement');
+assert.deepEqual(project.wads['10-00.LCS'].adds[0].pathMap, [0, 1, 1], 'copy/paste preserves waypoint source-node templates');
 assert.equal(project.wads['10-00.LCS'].adds[0].trigger.ty, 4, 'copy/paste preserves the selected trigger override');
-assert.deepEqual(project.wads['10-00.LCS'].adds[0].path, [[1, 2, 0], [4, 3, 6]], 'copy/paste preserves waypoint path overrides');
+assert.deepEqual(project.wads['10-00.LCS'].adds[0].path, [[1, 2, 0], [4, 3, 6], [4, 3, 6]], 'copy/paste preserves waypoint path overrides');
 assert.equal(Viewer.sel.i, 1, 'paste should select the newly created instance');
 assert.deepEqual(editor.ground(600, 400, 2), [0, 0, 0], 'ground projection should remain available to the prefab-placement UI');
 

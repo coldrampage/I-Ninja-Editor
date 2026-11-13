@@ -63,21 +63,38 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
  };
  const pathNodes=(dv,Uf,pn)=>{const seen=new Set();for(let g=0;g<64&&Uf(pn)>0&&!seen.has(pn);g++){seen.add(pn);pn=Uf(pn)}
   const nodes=[],s2=new Set();while(pn>0&&!s2.has(pn)&&nodes.length<64){s2.add(pn);nodes.push(pn);pn=Uf(pn+4)}return nodes};
- const writePathOverride=(instanceOff,positions,cloneExisting)=>{
+ const writePathOverride=(instanceOff,positions,pathMap,cloneExisting)=>{
   const pn=U(instanceOff+0x30);
   if(!pn)throw'cannot edit a waypoint path that has no node chain';
   const sn=pathNodes(d,U,pn);
-  if(!sn.length||positions.length!==sn.length)throw'waypoint path node count changed; adding or removing nodes is not supported';
+  if(!sn.length)throw'waypoint path has no readable nodes';
+  if(!Array.isArray(positions)||positions.length<1||positions.length>64)throw'waypoint paths must contain 1 to 64 nodes';
+  let templates;
+  if(pathMap===undefined||pathMap===null){
+   if(positions.length!==sn.length)throw'waypoint path node count changed without a source-node map';
+   templates=sn.map((_,i)=>i);
+  }else{
+   if(!Array.isArray(pathMap)||pathMap.length!==positions.length||pathMap.some(i=>!Number.isInteger(i)||i<0||i>=sn.length))throw'invalid waypoint source-node map';
+   templates=pathMap.slice();
+  }
+  const identity=positions.length===sn.length&&templates.every((v,i)=>v===i);
   let targets=sn,cur=sn.indexOf(pn);
-  if(cloneExisting){
-   const base=alloc(sn.length*0x40,16);targets=sn.map((_,i)=>base+i*0x40);
-   sn.forEach((n,k)=>{
-    const t=targets[k];
-    for(let w=0;w<0x40;w+=4){W(t+w,U(n+w));if(w!==0&&w!==4&&rel.has(n+w))addRel(t+w)}
+  // A changed count or a mapped duplicate needs a rebuilt chain. Each output
+  // node copies the selected source node's full 0x40-byte record, then receives
+  // fresh prev/next links and its edited position. This keeps node-specific
+  // metadata when a waypoint is duplicated in the editor.
+  if(cloneExisting||!identity){
+   const base=alloc(positions.length*0x40,16);targets=positions.map((_,k)=>base+k*0x40);
+   targets.forEach((t,k)=>{
+    const source=sn[templates[k]];
+    for(let w=0;w<0x40;w+=4){W(t+w,U(source+w));if(w>=8&&rel.has(source+w))addRel(t+w)}
     W(t,k?targets[k-1]:0);if(k)addRel(t);
     W(t+4,k+1<targets.length?targets[k+1]:0);if(k+1<targets.length)addRel(t+4);
    });
-   W(instanceOff+0x30,targets[Math.max(0,cur)]);addRel(instanceOff+0x30);
+   const originalCurrentIndex=Math.max(0,cur);
+   const mappedCurrentIndex=templates.indexOf(originalCurrentIndex);
+   const targetIndex=mappedCurrentIndex<0?0:mappedCurrentIndex;
+   W(instanceOff+0x30,targets[Math.min(targetIndex,targets.length-1)]);addRel(instanceOff+0x30);
   }
   positions.forEach((p,k)=>{
    if(!Array.isArray(p)||p.length<3||!p.slice(0,3).every(Number.isFinite))throw'invalid waypoint position at node '+k;
@@ -92,7 +109,7 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
  for(const[k,m]of Object.entries(ops.mods||{})){const i=+k;if(!(i<nin))throw'instance '+i+' out of range in '+wadName;if(del.has(i))continue;const o=ins+i*INS,dd=m.d||[0,0,0];
   if(dd.some(x=>x)){for(let a=0;a<3;a++)WF(o+0x10+4*a,F(o+0x10+4*a)+dd[a]);if(!m.trigger)moveShape(U(o+0x34),dd,doneShapes);
    const pn=U(o+0x30);if(pn&&!m.path)for(const n of pathNodes(d,U,pn))if(!doneNodes.has(n)){doneNodes.add(n);for(let a=0;a<3;a++)WF(n+8+4*a,F(n+8+4*a)+dd[a])}}
-  if(m.path){const pos=[F(o+0x10),F(o+0x14),F(o+0x18)];writePathOverride(o,m.path.map(n=>n.map((v,k)=>v+pos[k])),true)}
+  if(m.path){const pos=[F(o+0x10),F(o+0x14),F(o+0x18)];writePathOverride(o,m.path.map(n=>n.map((v,k)=>v+pos[k])),m.pathMap,true)}
   if(m.trigger)writeTriggerShape(o,m.trigger,[F(o+0x10),F(o+0x14),F(o+0x18)],U(o+0x34));
   rot(o,m.dy||0,m.dp||0,m.dr||0);
   const rg=Object.entries(m.regs||{});if(rg.length){const cp=U(o+0x28),ni=d.getUint16(cp+0x18,true),old=U(o+0x2c),np=alloc(4*Math.max(ni,1));
@@ -144,7 +161,7 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
      for(let w=8;w<0x40;w+=4)if(sRel.has(n+w)){if(!same)throw'path node points into its own level data';addRel(t+w)}
      for(let q=0;q<3;q++)WF(t+8+4*q,sF(n+8+4*q)+dd[q])});
     W(o+0x30,base+Math.max(cur,0)*0x40);addRel(o+0x30)}
-   if(a.path){const pos=a.p.slice();writePathOverride(o,a.path.map(n=>n.map((v,k)=>v+pos[k])),false)}
+   if(a.path){const pos=a.p.slice();writePathOverride(o,a.path.map(n=>n.map((v,k)=>v+pos[k])),a.pathMap,false)}
    // shape record (0x20) + polygon vertices
    const sp=sU(so+0x34);W(o+0x34,0);
    if(sp){const t=alloc(0x20);for(let w=0;w<0x20;w+=4)W(t+w,sU(sp+w));const ty=sU(sp)&0xffff,cnt=sU(sp)>>>16,pp=sU(sp+4);

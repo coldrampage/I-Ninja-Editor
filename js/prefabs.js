@@ -41,6 +41,13 @@ export function installPrefabManager({
   const lvOf = w => w.replace(/\.LCS$/i, '');
   const cloneTrigger = t => t && ({ ty: t.ty, box: t.box.slice(), poly: t.poly ? t.poly.slice() : null });
   const clonePath = path => Array.isArray(path) ? path.map(n => n.slice(0, 3).map(Number)) : null;
+  const clonePathMap = map => Array.isArray(map) ? map.slice() : null;
+  const cleanPathMap = (map, path) => {
+    if (map == null) return null;
+    if (!Array.isArray(path) || !Array.isArray(map) || map.length !== path.length
+      || map.some(i => !Number.isInteger(i) || i < 0 || i > 63)) return null;
+    return map.slice();
+  };
   const cleanPath = path => {
     if (path == null) return null;
     if (!Array.isArray(path) || path.length < 1 || path.length > 64
@@ -330,7 +337,7 @@ export function installPrefabManager({
     return {
       from, source, sourceWad, linkedCount, hasCustomLinks, record: R,
       dy: Number(H.dy) || 0, dp: Number(H.dp) || 0, dr: Number(H.dr) || 0,
-      regs: { ...(H.regs || {}) }, trigger: cloneTrigger(H.trigger), path: clonePath(H.path)
+      regs: { ...(H.regs || {}) }, trigger: cloneTrigger(H.trigger), path: clonePath(H.path), pathMap: clonePathMap(H.pathMap)
     };
   }
 
@@ -355,7 +362,7 @@ export function installPrefabManager({
       const nodes = graph.nodes.map(n => ({
         from: { ...n.from }, vol: n.vol, offset: n.offset.slice(),
         dy: n.dy, dp: n.dp, dr: n.dr, regs: { ...n.regs },
-        trigger: cloneTrigger(n.trigger), path: clonePath(n.path), links: n.links.map(x => x.slice())
+        trigger: cloneTrigger(n.trigger), path: clonePath(n.path), pathMap: clonePathMap(n.pathMap), links: n.links.map(x => x.slice())
       }));
       const favorite = {
         id: nextFavoriteId(), name, category,
@@ -365,7 +372,7 @@ export function installPrefabManager({
         includeLinked,
         linkedCount: includeLinked ? Math.max(0, nodes.length - 1) : 0,
         dy: recipe.dy, dp: recipe.dp, dr: recipe.dr,
-        regs: recipe.regs, trigger: cloneTrigger(recipe.trigger), path: clonePath(recipe.path),
+        regs: recipe.regs, trigger: cloneTrigger(recipe.trigger), path: clonePath(recipe.path), pathMap: clonePathMap(recipe.pathMap),
         fp, fps, nodes,
         note: graph.truncated ? 'Linked group reached the 24-object safety limit; some linked objects may not be included.' : ''
       };
@@ -437,7 +444,7 @@ export function installPrefabManager({
           dy: Number.isFinite(Number(n.dy)) ? Number(n.dy) : 0,
           dp: Number.isFinite(Number(n.dp)) ? Number(n.dp) : 0,
           dr: Number.isFinite(Number(n.dr)) ? Number(n.dr) : 0,
-          regs: cleanRegs(n.regs), trigger: cleanTrigger(n.trigger), path: cleanPath(n.path), links
+          regs: cleanRegs(n.regs), trigger: cleanTrigger(n.trigger), path: cleanPath(n.path), pathMap: cleanPathMap(n.pathMap, n.path), links
         });
       }
     }
@@ -453,7 +460,7 @@ export function installPrefabManager({
       dy: Number.isFinite(Number(raw.dy)) ? Number(raw.dy) : 0,
       dp: Number.isFinite(Number(raw.dp)) ? Number(raw.dp) : 0,
       dr: Number.isFinite(Number(raw.dr)) ? Number(raw.dr) : 0,
-      regs: cleanRegs(raw.regs), trigger: cleanTrigger(raw.trigger), path: cleanPath(raw.path), fp, fps, nodes,
+      regs: cleanRegs(raw.regs), trigger: cleanTrigger(raw.trigger), path: cleanPath(raw.path), pathMap: cleanPathMap(raw.pathMap, raw.path), fp, fps, nodes,
       note: safeText(raw.note, 240)
     };
   }
@@ -495,7 +502,7 @@ export function installPrefabManager({
           return pushAdds(tw, {
             from: { ...favorite.from }, p: at.map(r3),
             dy: favorite.dy || 0, dp: favorite.dp || 0, dr: favorite.dr || 0,
-            regs: { ...(favorite.regs || {}) }, trigger: cloneTrigger(favorite.trigger), path: clonePath(favorite.path)
+            regs: { ...(favorite.regs || {}) }, trigger: cloneTrigger(favorite.trigger), path: clonePath(favorite.path), pathMap: clonePathMap(favorite.pathMap)
           }, { deep: favorite.includeLinked });
         })();
       Viewer.refresh();
@@ -623,7 +630,7 @@ export function installPrefabManager({
         from: { w: from.w, i: +from.i }, vol: sourceWadOf(from.w),
         offset: position.map((v, k) => r3(v - rootPosition[k])),
         dy: Number(H.dy) || 0, dp: Number(H.dp) || 0, dr: Number(H.dr) || 0,
-        regs: { ...(H.regs || {}) }, trigger: cloneTrigger(H.trigger), path: clonePath(H.path), links: []
+        regs: { ...(H.regs || {}) }, trigger: cloneTrigger(H.trigger), path: clonePath(H.path), pathMap: clonePathMap(H.pathMap), links: []
       });
       queue.push({ idx, kind, ownerW, from: { w: from.w, i: +from.i }, H });
       return idx;
@@ -711,7 +718,7 @@ export function installPrefabManager({
       from: { ...node.from },
       p: at.map((v, k) => r3(v + (node.offset[k] || 0))),
       dy: node.dy || 0, dp: node.dp || 0, dr: node.dr || 0,
-      regs: { ...(node.regs || {}) }, trigger: cloneTrigger(node.trigger), path: clonePath(node.path), id: ++id, lk: []
+      regs: { ...(node.regs || {}) }, trigger: cloneTrigger(node.trigger), path: clonePath(node.path), pathMap: clonePathMap(node.pathMap), id: ++id, lk: []
     }));
     nodes.forEach((node, i) => {
       for (const edge of node.links || []) {
@@ -754,6 +761,7 @@ export function installPrefabManager({
         regs: n ? {} : { ...a.regs },
         trigger: n ? cloneTrigger((((getProject().wads || {})[a.from.w] || {}).mods || {})[t.i]?.trigger) : cloneTrigger(a.trigger),
         path: n ? clonePath((((getProject().wads || {})[a.from.w] || {}).mods || {})[t.i]?.path) : clonePath(a.path),
+        pathMap: n ? clonePathMap((((getProject().wads || {})[a.from.w] || {}).mods || {})[t.i]?.pathMap) : clonePathMap(a.pathMap),
         id: ++id, lk: []
       };
     });

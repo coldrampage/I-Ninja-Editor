@@ -13,6 +13,16 @@ export function normalizePath(path) {
   return path.map(p => p.slice(0, 3).map(r3));
 }
 
+export function normalizePathMap(pathMap, pathLength, sourceLength = pathLength) {
+  if (pathMap == null) return Array.from({ length: pathLength }, (_, i) => i);
+  if (!Array.isArray(pathMap) || pathMap.length !== pathLength
+    || !Number.isInteger(sourceLength) || sourceLength < 1
+    || pathMap.some(i => !Number.isInteger(i) || i < 0 || i >= sourceLength)) {
+    throw new Error('Invalid waypoint source-node map');
+  }
+  return pathMap.slice();
+}
+
 export function movePathNode(path, index, axis, value) {
   const next = normalizePath(path);
   if (!Number.isInteger(index) || index < 0 || index >= next.length
@@ -21,6 +31,21 @@ export function movePathNode(path, index, axis, value) {
   }
   next[index][axis] = r3(value);
   return next;
+}
+
+// Duplicate the selected node immediately after itself. pathMap records which
+// original chain node supplies the node's non-position data when rebuilding LCS.
+export function insertDuplicatePathNode(path, selectedIndex, pathMap = null) {
+  const next = normalizePath(path);
+  if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= next.length) {
+    throw new Error('Invalid waypoint insertion index');
+  }
+  if (next.length >= 64) throw new Error('Waypoint paths are limited to 64 nodes');
+  const map = normalizePathMap(pathMap, next.length);
+  const insertAt = selectedIndex + 1;
+  next.splice(insertAt, 0, next[selectedIndex].slice());
+  map.splice(insertAt, 0, map[selectedIndex]);
+  return { path: next, pathMap: map, insertedIndex: insertAt };
 }
 
 export function installPathEditor({ Viewer, commit, setOverlayRender = () => {} }) {
@@ -40,9 +65,11 @@ export function installPathEditor({ Viewer, commit, setOverlayRender = () => {} 
     }
     const path = normalizePath(R.e.path);
     const H = R.add || R.m || {};
+    const pathMap = normalizePathMap(H.pathMap, path.length);
+    focusNode = Math.max(0, Math.min(focusNode, path.length - 1));
     const rows = path.map((p, i) =>
-      `<div class="ed-path-node" data-path-row="${i}" style="margin:4px 0;padding:3px;border-top:1px solid #333">` +
-      `<b>Node ${i + 1}</b> <span class="h">#${i}</span><br>` +
+      `<div class="ed-path-node" data-path-row="${i}" style="margin:4px 0;padding:3px;border-top:1px solid #333;${i === focusNode ? 'background:#26323a' : ''}">` +
+      `<button type="button" data-path-select="${i}" style="padding:1px 5px">${i === focusNode ? '&#9679;' : '&#9675;'} Node ${i + 1}</button> <span class="h">#${i} · source #${pathMap[i]}</span><br>` +
       `X <input type="number" data-path-node="${i}" data-path-axis="0" value="${p[0].toFixed(2)}" step="0.5" style="width:64px"> ` +
       `Y <input type="number" data-path-node="${i}" data-path-axis="1" value="${p[1].toFixed(2)}" step="0.5" style="width:64px"> ` +
       `Z <input type="number" data-path-node="${i}" data-path-axis="2" value="${p[2].toFixed(2)}" step="0.5" style="width:64px"></div>`
@@ -50,26 +77,54 @@ export function installPathEditor({ Viewer, commit, setOverlayRender = () => {} 
     container.insertAdjacentHTML('beforeend',
       `<details id="ed_path" ${detailsOpen ? 'open' : ''} style="margin-top:6px;border-top:1px solid #444;padding-top:4px">` +
       `<summary style="cursor:pointer;color:#fc6">Waypoint path · ${path.length} node${path.length === 1 ? '' : 's'}</summary>` +
-      `<div class="h" style="margin:3px 0">Drag a coloured axis handle on a waypoint to move it in 3D. Or enter exact world coordinates below. Node order and links are preserved.</div>` +
+      `<div class="h" style="margin:3px 0">Drag a coloured axis handle on a waypoint to move it in 3D. Select a node, then insert a duplicate immediately after it. Or enter exact world coordinates below.</div>` +
       `<div class="h">X = red · Y = green · Z = blue</div>` +
       `<div style="margin-top:4px">${rows}</div>` +
+      `<div style="margin-top:4px"><button id="ed_path_insert" ${path.length >= 64 ? 'disabled' : ''}>insert duplicate after selected</button> <span class="h" id="ed_path_insert_hint">${path.length >= 64 ? '64-node game limit reached' : `inserts after node ${focusNode + 1}`}</span></div>` +
+      `<div id="ed_path_status" class="h" style="margin-top:3px"></div>` +
       `<div style="margin-top:4px"><button id="ed_path_reset" ${H.path ? '' : 'disabled'}>reset path</button> <span class="h">${H.path ? 'project override active' : 'original game path'}</span></div>` +
       `</details>`);
     const detail = container.querySelector('#ed_path');
     if (detail) detail.ontoggle = () => { detailsOpen = detail.open; };
+    const selectNode = index => {
+      focusNode = Math.max(0, Math.min(index, path.length - 1));
+      for (const row of container.querySelectorAll('[data-path-row]')) {
+        const active = Number(row.dataset.pathRow) === focusNode;
+        row.style.background = active ? '#26323a' : '';
+        const button = row.querySelector && row.querySelector('[data-path-select]');
+        if (button) button.innerHTML = (active ? '&#9679;' : '&#9675;') + ' Node ' + (Number(row.dataset.pathRow) + 1);
+      }
+      const hint = container.querySelector('#ed_path_insert_hint');
+      if (hint && path.length < 64) hint.textContent = 'inserts after node ' + (focusNode + 1);
+      Viewer.need = true;
+    };
+    for (const button of container.querySelectorAll('[data-path-select]')) {
+      button.onclick = () => selectNode(Number(button.dataset.pathSelect));
+    }
     for (const input of container.querySelectorAll('[data-path-node][data-path-axis]')) {
-      input.onfocus = () => { focusNode = Number(input.dataset.pathNode); Viewer.need = true; };
+      input.onfocus = () => selectNode(Number(input.dataset.pathNode));
       input.onchange = () => {
         const next = clonePath(path);
         const i = Number(input.dataset.pathNode), axis = Number(input.dataset.pathAxis), value = Number(input.value);
         if (!Number.isFinite(value) || !next[i]) return;
         next[i][axis] = r3(value);
-        focusNode = i;
-        commit(q, next);
+        selectNode(i);
+        commit(q, next, pathMap);
       };
     }
+    const insert = container.querySelector('#ed_path_insert');
+    if (insert) insert.onclick = () => {
+      try {
+        const result = insertDuplicatePathNode(path, focusNode, pathMap);
+        focusNode = result.insertedIndex;
+        commit(q, result.path, result.pathMap);
+      } catch (error) {
+        const status = container.querySelector('#ed_path_status');
+        if (status) status.textContent = String(error.message || error);
+      }
+    };
     const reset = container.querySelector('#ed_path_reset');
-    if (reset) reset.onclick = () => commit(q, null);
+    if (reset) reset.onclick = () => commit(q, null, null);
     Viewer.need = true;
   }
 
@@ -176,7 +231,8 @@ export function installPathEditor({ Viewer, commit, setOverlayRender = () => {} 
     drag = null;
     Viewer.cv.style.cursor = '';
     focusNode = done.index;
-    commit(done.q, done.positions);
+    const H = done.R.add || done.R.m || {};
+    commit(done.q, done.positions, normalizePathMap(H.pathMap, done.positions.length));
     Viewer.need = true;
     e.preventDefault?.();
     e.stopImmediatePropagation?.();

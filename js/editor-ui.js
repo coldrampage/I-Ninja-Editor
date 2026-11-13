@@ -3,14 +3,14 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js?v=step16-cylinder-resize';
+import { EC } from './editor-core.js?v=step18-waypoint-insert';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step17-waypoint-paths';
-import { installModelEditor } from './models-panel.js?v=step16-cylinder-resize';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step18-waypoint-insert';
+import { installModelEditor } from './models-panel.js?v=step18-waypoint-insert';
 import { installScriptEditor } from './script-editor.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step17-waypoint-paths';
-import { installPrefabManager } from './prefabs.js?v=step16-cylinder-resize';
+import { installEntityEditor } from './entity-editor.js?v=step18-waypoint-insert';
+import { installPrefabManager } from './prefabs.js?v=step18-waypoint-insert';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
