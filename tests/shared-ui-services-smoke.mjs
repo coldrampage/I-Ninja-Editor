@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const ui=fs.readFileSync(new URL('../js/editor-ui.js', import.meta.url),'utf8');
+const ent=fs.readFileSync(new URL('../js/entity-editor.js', import.meta.url),'utf8');
+const models=fs.readFileSync(new URL('../js/models-panel.js', import.meta.url),'utf8');
+assert.match(ui,/function summary\(\)\s*\{/,'summary service is defined in coordinator');
+assert.match(ui,/function rmList\(\)\s*\{/,'removed-entity list service is defined in coordinator');
+assert.match(ui,/installModelEditor\(\{[^}]*summary/s,'summary is injected into Models module');
+assert.match(ui,/installEntityEditor\(\{[^}]*summary,\s*rmList/s,'summary and rmList are injected into Entity Editor');
+assert.match(ent,/function update\(\)\s*\{\s*summary\(\);\s*rmList\(\);/,'Entity Editor invokes injected shared services');
+assert.match(models,/summary\(\)/,'Models module invokes injected summary service');
+console.log('shared UI services smoke test passed');

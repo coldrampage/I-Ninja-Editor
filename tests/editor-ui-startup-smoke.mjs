@@ -27,3 +27,20 @@ assert.ok(panelInsert < projectManagerInstall, 'panel exists before project mana
 assert.ok(panelInsert < entityEditorInstall, 'panel exists before entity editor installs');
 
 console.log('PASS: editor panel startup smoke test (' + requiredIds.length + ' required controls)');
+
+// Project/archive access must remain defined in the coordinator before it is
+// injected into the model, script, project and entity modules.
+assert.match(source, /const\s+getWad\s*=\s*w\s*=>/, 'coordinator defines the cached getWad accessor');
+assert.match(source, /installModelEditor\(\{[^}]*getWad/s, 'Models module receives getWad');
+assert.match(source, /installScriptEditor\(\{[^}]*getWad/s, 'Script editor receives getWad');
+assert.match(source, /installProjectManager\(\{Viewer,EC,IA,getProject:\(\)=>PRJ,setProject:j=>\{PRJ=j\},isVol,getWad/, 'Project manager receives getWad');
+assert.match(source, /installEntityEditor\(\{[^}]*getWad/s, 'Entity editor receives getWad');
+assert.match(source, /WC\s*=\s*\{\}/, 'parsed WAD cache is reset when a new volume is opened');
+console.log('PASS: cached WAD accessor is defined and injected into all dependent modules');
+
+// Shared status/removal helpers must survive the entity-editor extraction.
+assert.match(source, /function\s+summary\s*\(\)\s*\{/, 'coordinator defines summary()');
+assert.match(source, /function\s+rmList\s*\(\)\s*\{/, 'coordinator defines rmList()');
+assert.match(source, /installModelEditor\(\{[^}]*summary/s, 'Models module receives summary()');
+assert.match(source, /installEntityEditor\(\{[^}]*summary,\s*rmList/s, 'Entity Editor receives summary() and rmList()');
+console.log('PASS: shared summary and removed-entity services are defined and injected');

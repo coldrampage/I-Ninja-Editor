@@ -50,6 +50,13 @@ function spLoad(w){if(SP[w])return SP[w];const f=Viewer.files.find(x=>x.name===w
  return SP[w]={ents,pick,first,rep:rp,cls:new Set(siWad(A,B).classes.map(c=>c.name))}}
 const srcEnt=a=>{const l=Viewer.D.find(x=>x.id===lvOf(a.from.w));if(l)return (l.all0||l.ents).find(e=>e.i===a.from.i&&!e.added);const s=spLoad(a.from.w);return s&&s.ents[a.from.i]};
 const unzero=m=>m.d.some(x=>x)||m.dy||m.dp||m.dr||Object.keys(m.regs).length||(m.lk&&m.lk.length);
+// Shared project status and removed-entity restoration UI. These stayed in the
+// coordinator when entity editing moved into entity-editor.js because Models
+// and Entity Editor both use them.
+function summary(){let m=0,a=0,n=0,r=0;for(const w in PRJ.wads){const x=Object.values(PRJ.wads[w].mods).filter(unzero).length,y=PRJ.wads[w].adds.length,z=(PRJ.wads[w].del||[]).length;m+=x;a+=y;r+=z;if(x||y||z)n++}Viewer.$('ed_sum').textContent=m+' moved/edited, '+a+' added, '+r+' removed in '+n+' level(s)'+(Object.keys(PRJ.vols||{}).length>1?' ['+Object.keys(PRJ.vols).join(', ')+']':'')}
+function rmList(){const out=[];for(const lv of Viewer.D){const w=wadOf(lv.id),P=w&&PRJ.wads[w];if(!P||!lv.all0)continue;for(const i of P.del||[])if(lv.all0[i])out.push([w,i,lv.all0[i].n,lv.id])}
+ Viewer.$('ed_rm').innerHTML=out.length?'removed: '+out.slice(0,12).map(([w,i,n,L])=>L+'#'+i+' '+Viewer.esc(n)+' <a href=# data-w="'+w+'" data-i='+i+'>restore</a>').join(' &middot; ')+(out.length>12?' &hellip;':''):'';
+ Viewer.$('ed_rm').querySelectorAll('a').forEach(a=>a.onclick=e=>{e.preventDefault();const P=PRJ.wads[a.dataset.w];P.del=P.del.filter(x=>x!=+a.dataset.i);Viewer.refresh()})}
 // re-derive every loaded level from the base data + project (idempotent)
 function applyEdits(){for(const lv of Viewer.D){const w=wadOf(lv.id);if(!w)continue;if(!lv.all0){lv.all0=lv.ents.slice();lv.nb=lv.all0.length}
   const orig=lv.all0,P=PRJ.wads[w],del=new Set(P&&P.del||[]);for(const e of orig){if(e.base)put(e,{})}
