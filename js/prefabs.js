@@ -30,6 +30,38 @@ export function sourceClassVariants(sourceReports, targetReports, rootName, sour
   return variants;
 }
 
+// Some I-Ninja scripts find companion strats by their literal class name
+// (Strat_FindByName / Strat_BroadcastName) instead of using an instance-link
+// register. Those instances are invisible to the regular linked-child walk.
+// Follow exact string -> class-name matches recursively and return the source
+// instances that must accompany a prefab. The root class itself is excluded:
+// a favourite should not silently pull in every other copy of its own class.
+export function discoverNamedCompanionInstances(source, rootClassName, options = {}) {
+  if (!source || !source.rep || !source.cls || !Array.isArray(source.ents)) return [];
+  const excluded = new Set([rootClassName, ...(options.excludeClasses || [])]);
+  const seenClasses = new Set(excluded), seenInstances = new Set(), out = [];
+  const canCopy = typeof options.canCopy === 'function' ? options.canCopy : () => true;
+  const queue = [rootClassName];
+  while (queue.length) {
+    const owner = queue.shift();
+    const report = source.rep[owner];
+    for (const candidate of report && report.strs || []) {
+      if (!source.cls.has(candidate) || seenClasses.has(candidate)) continue;
+      seenClasses.add(candidate);
+      const matches = source.ents.filter(e => e && e.n === candidate && Number.isInteger(e.i) && canCopy(e));
+      if (!matches.length) continue;
+      for (const e of matches) {
+        const key = String(e.i);
+        if (seenInstances.has(key)) continue;
+        seenInstances.add(key);
+        out.push({ name: candidate, i: e.i, via: owner });
+      }
+      queue.push(candidate);
+    }
+  }
+  return out;
+}
+
 // The coordinator injects live project/archive services and narrow entity-editor
 // callbacks so this module does not depend on coordinator lexical scope.
 export function installPrefabManager({
@@ -67,10 +99,12 @@ export function installPrefabManager({
       if (pick[e.n] === undefined && !EC.prefabCheck(A, B, e.i)) pick[e.n] = e.i;
     }
     let rep = {};
-    try { rep = EC.classReports(A, B); }
-    catch (e) { console.error('class report failed for', w, e); }
+    if (typeof EC.classReports === 'function') {
+      try { rep = EC.classReports(A, B); }
+      catch (e) { console.error('class report failed for', w, e); }
+    }
     return SP[w] = {
-      ents, pick, first, rep,
+      A, B, ents, pick, first, rep,
       cls: new Set(siWad(A, B).classes.map(c => c.name))
     };
   }
@@ -284,8 +318,9 @@ export function installPrefabManager({
     list.innerHTML = items.map(f => {
       const category = f.category ? '[' + f.category + '] ' : '';
       const linked = f.includeLinked && f.linkedCount ? ' +' + f.linkedCount : '';
+      const companions = f.companionCount ? ' ↗' + f.companionCount : '';
       const label = category + (f.name || f.sourceName || 'Unnamed prefab')
-        + ' — ' + (f.sourceName || f.from.w + '#' + f.from.i) + linked;
+        + ' — ' + (f.sourceName || f.from.w + '#' + f.from.i) + linked + companions;
       return '<option value="' + escapeHtml(f.id) + '">' + escapeHtml(label) + '</option>';
     }).join('');
     if (items.some(f => String(f.id) === previous)) list.value = previous;
@@ -307,13 +342,18 @@ export function installPrefabManager({
     const sourceText = src
       ? src.n + ' · ' + f.from.w + ' #' + f.from.i
       : (f.sourceName || 'Unknown class') + ' · ' + f.from.w + ' #' + f.from.i + ' (source not loaded)';
-    const graphCount = Array.isArray(f.nodes) && f.nodes.length ? f.nodes.length - 1 : (f.linkedCount || 0);
+    const graphNodes = Array.isArray(f.nodes) ? f.nodes : [];
+    const graphCount = graphNodes.length ? graphNodes.filter(n => !n.named).length - 1 : (f.linkedCount || 0);
+    const companionCount = graphNodes.filter(n => n.named).length || Number(f.companionCount) || 0;
     const linkText = f.includeLinked
-      ? 'Linked children: ' + graphCount + ' (per-child registers and internal links saved)'
+      ? 'Linked children: ' + Math.max(0, graphCount) + ' (per-child registers and internal links saved)'
       : 'Linked children: not included';
+    const companionText = companionCount
+      ? '\nNamed runtime companions: ' + companionCount + ' (discovered from script class-name references)'
+      : '';
     info.textContent = (message ? message + '\n' : '')
       + sourceText + '\n' + (f.category ? 'Category: ' + f.category + '\n' : '')
-      + linkText
+      + linkText + companionText
       + (f.note ? '\n' + f.note : '');
   }
 
@@ -362,7 +402,8 @@ export function installPrefabManager({
       const nodes = graph.nodes.map(n => ({
         from: { ...n.from }, vol: n.vol, offset: n.offset.slice(),
         dy: n.dy, dp: n.dp, dr: n.dr, regs: { ...n.regs },
-        trigger: cloneTrigger(n.trigger), path: clonePath(n.path), pathMap: clonePathMap(n.pathMap), links: n.links.map(x => x.slice())
+        trigger: cloneTrigger(n.trigger), path: clonePath(n.path), pathMap: clonePathMap(n.pathMap),
+        links: n.links.map(x => x.slice()), named: !!n.named, namedVia: n.namedVia || null
       }));
       const favorite = {
         id: nextFavoriteId(), name, category,
@@ -370,7 +411,8 @@ export function installPrefabManager({
         from: recipe.from,
         vol: volOf(recipe.from.w) || nodes[0]?.vol || null,
         includeLinked,
-        linkedCount: includeLinked ? Math.max(0, nodes.length - 1) : 0,
+        linkedCount: includeLinked ? nodes.filter(n => !n.named).length - 1 : 0,
+        companionCount: nodes.filter(n => n.named).length,
         dy: recipe.dy, dp: recipe.dp, dr: recipe.dr,
         regs: recipe.regs, trigger: cloneTrigger(recipe.trigger), path: clonePath(recipe.path), pathMap: clonePathMap(recipe.pathMap),
         fp, fps, nodes,
@@ -380,7 +422,8 @@ export function installPrefabManager({
       Viewer.$('ed_fav_name').value = '';
       renderFavorites(false);
       Viewer.$('ed_fav_list').value = String(favorite.id);
-      showFavorite('Saved favourite "' + name + '" with ' + Math.max(0, nodes.length - 1) + ' linked child setting(s).');
+      showFavorite('Saved favourite "' + name + '" with ' + Math.max(0, nodes.filter(n => !n.named).length - 1)
+        + ' linked child setting(s) and ' + nodes.filter(n => n.named).length + ' named runtime companion(s).');
       summary();
     } catch (error) {
       Viewer.$('ed_fav_info').textContent = 'Could not save favourite: ' + error;
@@ -444,7 +487,8 @@ export function installPrefabManager({
           dy: Number.isFinite(Number(n.dy)) ? Number(n.dy) : 0,
           dp: Number.isFinite(Number(n.dp)) ? Number(n.dp) : 0,
           dr: Number.isFinite(Number(n.dr)) ? Number(n.dr) : 0,
-          regs: cleanRegs(n.regs), trigger: cleanTrigger(n.trigger), path: cleanPath(n.path), pathMap: cleanPathMap(n.pathMap, n.path), links
+          regs: cleanRegs(n.regs), trigger: cleanTrigger(n.trigger), path: cleanPath(n.path), pathMap: cleanPathMap(n.pathMap, n.path),
+          links, named: n.named === true, namedVia: n.named === true ? safeText(n.namedVia, 80) || null : null
         });
       }
     }
@@ -457,12 +501,87 @@ export function installPrefabManager({
       vol: safeText(raw.vol, 128) || null,
       includeLinked: raw.includeLinked !== false,
       linkedCount: Math.max(0, Math.min(1000, Number(raw.linkedCount) || 0)),
+      companionCount: Math.max(0, Math.min(1000, nodes.filter(n => n.named).length || Number(raw.companionCount) || 0)),
       dy: Number.isFinite(Number(raw.dy)) ? Number(raw.dy) : 0,
       dp: Number.isFinite(Number(raw.dp)) ? Number(raw.dp) : 0,
       dr: Number.isFinite(Number(raw.dr)) ? Number(raw.dr) : 0,
       regs: cleanRegs(raw.regs), trigger: cleanTrigger(raw.trigger), path: cleanPath(raw.path), pathMap: cleanPathMap(raw.pathMap, raw.path), fp, fps, nodes,
       note: safeText(raw.note, 240)
     };
+  }
+
+  // Older v2 favourites were saved before named runtime companions were
+  // captured. Upgrade those recipes at placement time so users do not need to
+  // delete and recreate their existing favourites after updating the editor.
+  function augmentNamedRuntimeCompanions(favorite) {
+    const root = srcEnt({ from: favorite.from });
+    if (!root) return 0;
+    const project = getProject();
+    const modsFor = (w, i) => ((((project.wads || {})[w] || {}).mods || {})[i] || {});
+    const rootMod = modsFor(favorite.from.w, favorite.from.i);
+    const rootDelta = rootMod.d || [0, 0, 0];
+    const rootPosition = root.p.map((v, k) => v + (Number(rootDelta[k]) || 0));
+    let nodes = Array.isArray(favorite.nodes) && favorite.nodes.length
+      ? favorite.nodes.map(n => ({
+        ...n, from: { ...n.from }, offset: (n.offset || [0, 0, 0]).slice(),
+        regs: { ...(n.regs || {}) }, links: (n.links || []).map(e => e.slice()),
+        trigger: cloneTrigger(n.trigger), path: clonePath(n.path), pathMap: clonePathMap(n.pathMap)
+      }))
+      : [{
+        from: { ...favorite.from }, vol: favorite.vol || volOf(favorite.from.w) || (String(favorite.from.w).split('-')[0] + '.vol'),
+        offset: [0, 0, 0], dy: favorite.dy || 0, dp: favorite.dp || 0, dr: favorite.dr || 0,
+        regs: { ...(favorite.regs || {}) }, trigger: cloneTrigger(favorite.trigger),
+        path: clonePath(favorite.path), pathMap: clonePathMap(favorite.pathMap),
+        links: [], named: false, namedVia: null
+      }];
+    if (!nodes.length || nodes[0].from.w !== favorite.from.w || Number(nodes[0].from.i) !== Number(favorite.from.i)) return 0;
+
+    const byKey = new Map(nodes.map((node, index) => [node.from.w + '#' + node.from.i, index]));
+    const incoming = new Set();
+    nodes.forEach(node => (node.links || []).forEach(edge => incoming.add(Number(edge[1]))));
+    const queue = nodes.map((_, index) => index);
+    const rootClassName = root.n;
+    let added = 0, changed = false;
+    for (let q = 0; q < queue.length && nodes.length < 24; q++) {
+      const item = nodes[queue[q]], source = spLoad(item.from.w), entity = srcEnt({ from: item.from });
+      if (!source || !entity) continue;
+      for (const companion of discoverNamedCompanionInstances(source, entity.n, {
+        excludeClasses: [rootClassName],
+        canCopy: e => !EC.prefabCheck(source.A, source.B, e.i)
+      })) {
+        const key = item.from.w + '#' + companion.i;
+        let index = byKey.get(key);
+        if (index === undefined) {
+          const child = source.ents.find(e => e.i === companion.i);
+          if (!child) continue;
+          const childMod = modsFor(item.from.w, companion.i), delta = childMod.d || [0, 0, 0];
+          const childPosition = child.p.map((v, k) => v + (Number(delta[k]) || 0));
+          index = nodes.length;
+          nodes.push({
+            from: { w: item.from.w, i: companion.i },
+            vol: volOf(item.from.w) || (String(item.from.w).split('-')[0] + '.vol'),
+            offset: childPosition.map((v, k) => r3(v - rootPosition[k])),
+            dy: Number(childMod.dy) || 0, dp: Number(childMod.dp) || 0, dr: Number(childMod.dr) || 0,
+            regs: { ...(childMod.regs || {}) }, trigger: cloneTrigger(childMod.trigger),
+            path: clonePath(childMod.path), pathMap: clonePathMap(childMod.pathMap),
+            links: [], named: true, namedVia: companion.via
+          });
+          byKey.set(key, index);
+          queue.push(index);
+          added++;
+          changed = true;
+        } else if (index !== 0 && !incoming.has(index) && !(nodes[index].links || []).length && !nodes[index].named) {
+          nodes[index].named = true;
+          nodes[index].namedVia = companion.via;
+          changed = true;
+        }
+      }
+    }
+    if (changed || !Array.isArray(favorite.nodes) || !favorite.nodes.length) {
+      favorite.nodes = nodes;
+      favorite.companionCount = nodes.filter(n => n.named).length;
+    }
+    return added;
   }
 
   async function placeFavorite() {
@@ -472,6 +591,7 @@ export function installPrefabManager({
       const targetId = Viewer.$('ed_lv').value, tw = wadOf(targetId);
       if (!targetId || !tw) throw 'select a loaded target level first';
       await ensureSourceArchives(favorite, { targetW: tw });
+      const recoveredCompanions = augmentNamedRuntimeCompanions(favorite);
       const source = srcEnt({ from: favorite.from });
       if (!source) throw 'source instance ' + favorite.from.w + ' #' + favorite.from.i + ' could not be read';
       const checkFingerprint = (wadName, expected) => {
@@ -511,7 +631,7 @@ export function installPrefabManager({
       Viewer.inspect(Viewer.sel);
       updateEntity();
       Viewer.need = true;
-      showFavorite('Placed "' + favorite.name + '" in ' + targetId + '.');
+      showFavorite((recoveredCompanions ? 'Recovered ' + recoveredCompanions + ' missing name-based runtime companion(s); save the project to keep this favourite upgrade.\n' : '') + 'Placed "' + favorite.name + '" in ' + targetId + '.');
     } catch (error) {
       Viewer.$('ed_fav_info').textContent = 'Could not place favourite: ' + error;
     }
@@ -630,7 +750,8 @@ export function installPrefabManager({
         from: { w: from.w, i: +from.i }, vol: sourceWadOf(from.w),
         offset: position.map((v, k) => r3(v - rootPosition[k])),
         dy: Number(H.dy) || 0, dp: Number(H.dp) || 0, dr: Number(H.dr) || 0,
-        regs: { ...(H.regs || {}) }, trigger: cloneTrigger(H.trigger), path: clonePath(H.path), pathMap: clonePathMap(H.pathMap), links: []
+        regs: { ...(H.regs || {}) }, trigger: cloneTrigger(H.trigger), path: clonePath(H.path), pathMap: clonePathMap(H.pathMap),
+        links: [], linked: false, named: false, namedVia: null
       });
       queue.push({ idx, kind, ownerW, from: { w: from.w, i: +from.i }, H });
       return idx;
@@ -661,45 +782,106 @@ export function installPrefabManager({
       ? addAdded(rootRecord.w, rootRecord.add, rootRecord.e.added - 1)
       : addOriginal(recipe.from.w, recipe.from.i, rootRecord.m);
     if (rootIndex < 0) throw 'could not capture the selected prefab root';
-    if (!includeLinked) return { nodes: [nodes[rootIndex]], truncated: false };
-
+    // Walk normal instance-link registers when the user asked to include
+    // linked children. Named runtime companions are discovered independently:
+    // scripts such as SneakSentinel use Strat_FindByName("SneakTeleport"), so
+    // their required companion has no instance-link edge to follow.
     for (let q = 0; q < queue.length; q++) {
       const item = queue[q], L = srcLinks(item.from.w);
-      if (!L) continue;
-      const sourceIndex = item.from.i, ip = L.U(L.ins + sourceIndex * 0x3c + 0x2c);
-      for (const [owner, rg] of L.rows) {
-        if (owner !== sourceIndex) continue;
-        let child = -1;
-        const customLink = (item.H.lk || []).find(edge => +edge[0] === rg);
-        if (customLink) {
-          const found = findAdded(item.ownerW || item.from.w, customLink[1]);
-          if (found) child = addAdded(item.ownerW || item.from.w, found.a, found.index);
-        } else {
-          let target;
-          if (item.H.regs && item.H.regs[rg] !== undefined) target = Number(item.H.regs[rg]) >>> 0;
-          else if (item.kind === 'added' && item.ownerW && item.ownerW !== item.from.w) {
-            // A cross-level copy has no valid inherited instance links unless the
-            // user explicitly reconnected them in the destination level.
-            continue;
-          } else target = L.U(ip + 4 * rg);
-          const targetW = item.kind === 'added' ? (item.ownerW || item.from.w) : item.from.w;
-          const targetL = targetW === item.from.w ? L : srcLinks(targetW);
-          if (targetL && target < targetL.nin) child = addOriginal(targetW, target);
+      if (includeLinked && L) {
+        const sourceIndex = item.from.i, ip = L.U(L.ins + sourceIndex * 0x3c + 0x2c);
+        for (const [owner, rg] of L.rows) {
+          if (owner !== sourceIndex) continue;
+          let child = -1;
+          const customLink = (item.H.lk || []).find(edge => +edge[0] === rg);
+          if (customLink) {
+            const found = findAdded(item.ownerW || item.from.w, customLink[1]);
+            if (found) child = addAdded(item.ownerW || item.from.w, found.a, found.index);
+          } else {
+            let target;
+            if (item.H.regs && item.H.regs[rg] !== undefined) target = Number(item.H.regs[rg]) >>> 0;
+            else if (item.kind === 'added' && item.ownerW && item.ownerW !== item.from.w) {
+              // A cross-level copy has no valid inherited instance links unless the
+              // user explicitly reconnected them in the destination level.
+              continue;
+            } else target = L.U(ip + 4 * rg);
+            const targetW = item.kind === 'added' ? (item.ownerW || item.from.w) : item.from.w;
+            const targetL = targetW === item.from.w ? L : srcLinks(targetW);
+            if (targetL && target < targetL.nin) child = addOriginal(targetW, target);
+          }
+          if (child >= 0) {
+            nodes[item.idx].links.push([rg, child]);
+            nodes[child].linked = true;
+            nodes[child].named = false;
+            nodes[child].namedVia = null;
+          }
         }
-        if (child >= 0) nodes[item.idx].links.push([rg, child]);
+      }
+
+      const source = spLoad(item.from.w), entity = srcEnt({ from: item.from });
+      if (!source || !entity) continue;
+      const rootSource = srcEnt({ from: recipe.from });
+      const rootClassName = rootSource ? rootSource.n : entity.n;
+      for (const companion of discoverNamedCompanionInstances(source, entity.n, {
+        // The whole graph must never pull in another placement of its own root
+        // class. This exclusion is global, not just local to each recursion step.
+        excludeClasses: rootClassName ? [rootClassName] : [],
+        // Keep the exported discovery helper independent of editor internals;
+        // the installed manager supplies the actual source-instance safety check.
+        canCopy: e => !EC.prefabCheck(source.A, source.B, e.i)
+      })) {
+        const child = addOriginal(item.from.w, companion.i);
+        if (child < 0 || child === item.idx) continue;
+        // Only mark objects reached exclusively by literal class-name lookup.
+        // The incoming `linked` flag is important: checking outgoing links here
+        // could misclassify an ordinary linked child that itself has no children.
+        if (child !== rootIndex && !nodes[child].linked && !nodes[child].named) {
+          nodes[child].named = true;
+          nodes[child].namedVia = companion.via;
+        }
       }
     }
-    return { nodes, truncated };
+    return { nodes, truncated, companionCount: nodes.filter(n => n.named).length };
   }
 
   function pushFavoriteGraph(tw, favorite, at) {
     const nodes = favorite.nodes, P = WS(tw), base = P.adds.length;
     if (!Array.isArray(nodes) || !nodes.length || nodes.length > 24) throw 'invalid favourite linked-object graph';
+
+    // A script can use Strat_FindByName to find a runtime companion. From the
+    // script's point of view that companion is selected by class name, so adding
+    // another identical copy on every placement makes the lookup ambiguous.
+    // Reuse an exact source copy already added to this project, or a compatible
+    // instance already in the destination level. Never silently bind the name to
+    // a different same-named class implementation.
+    const target = spLoad(tw), incoming = new Set(), skipNamed = new Set();
+    nodes.forEach(node => (node.links || []).forEach(edge => {
+      const targetIndex = Number(edge && edge[1]);
+      if (Number.isInteger(targetIndex)) incoming.add(targetIndex);
+    }));
+    const deletedTargetInstances = new Set((P.del || []).map(Number));
+    nodes.forEach((node, index) => {
+      if (!node.named || incoming.has(index) || (node.links || []).length) return;
+      const src = srcEnt({ from: node.from }), source = spLoad(node.from.w);
+      if (!src || !source) return;
+      const existingProjectCopy = (P.adds || []).some(a => a.from && a.from.w === node.from.w
+        && Number(a.from.i) === Number(node.from.i));
+      if (existingProjectCopy) { skipNamed.add(index); return; }
+      if (!target || !target.cls.has(src.n)) return;
+      const srcSig = classReportSignature(source.rep && source.rep[src.n]);
+      const dstSig = classReportSignature(target.rep && target.rep[src.n]);
+      if (srcSig !== dstSig) {
+        throw 'named runtime companion ' + src.n + ' already exists in the destination with a different script; the name-based lookup cannot safely distinguish the two versions';
+      }
+      if (target.ents.some(e => e.n === src.n && !deletedTargetInstances.has(e.i))) skipNamed.add(index);
+    });
+
     // Validate all source classes and dependencies before adding any prefab
     // instances. Roll back dependency entries if a later child is not copyable.
     const oldClassCount = P.classes.length;
     try {
-      nodes.forEach(node => {
+      nodes.forEach((node, index) => {
+        if (skipNamed.has(index)) return;
         const src = srcEnt({ from: node.from }), g = getWad(node.from.w);
         if (!src || !g) throw 'source instance ' + node.from.w + ' #' + node.from.i + ' is unavailable';
         if (tw !== node.from.w) {
@@ -713,22 +895,34 @@ export function installPrefabManager({
       P.classes.splice(oldClassCount);
       throw error;
     }
+
     let id = addMaxId();
-    const recs = nodes.map((node, i) => ({
-      from: { ...node.from },
-      p: at.map((v, k) => r3(v + (node.offset[k] || 0))),
-      dy: node.dy || 0, dp: node.dp || 0, dr: node.dr || 0,
-      regs: { ...(node.regs || {}) }, trigger: cloneTrigger(node.trigger), path: clonePath(node.path), pathMap: clonePathMap(node.pathMap), id: ++id, lk: []
-    }));
-    nodes.forEach((node, i) => {
+    const recs = [], recordByNode = new Map();
+    nodes.forEach((node, index) => {
+      if (skipNamed.has(index)) return;
+      const record = {
+        from: { ...node.from },
+        p: at.map((v, k) => r3(v + (node.offset[k] || 0))),
+        dy: node.dy || 0, dp: node.dp || 0, dr: node.dr || 0,
+        regs: { ...(node.regs || {}) }, trigger: cloneTrigger(node.trigger), path: clonePath(node.path), pathMap: clonePathMap(node.pathMap),
+        id: ++id, lk: [], namedCompanion: !!node.named, namedVia: node.named ? node.namedVia || null : null
+      };
+      recs.push(record);
+      recordByNode.set(index, record);
+    });
+    nodes.forEach((node, index) => {
+      const owner = recordByNode.get(index);
+      if (!owner) return;
       for (const edge of node.links || []) {
-        const rg = +edge[0], target = +edge[1];
-        if (!Number.isInteger(rg) || rg < 0 || !Number.isInteger(target) || target < 0 || target >= recs.length) continue;
-        recs[i].lk.push([rg, recs[target].id]);
+        const rg = +edge[0], targetIndex = +edge[1], targetRecord = recordByNode.get(targetIndex);
+        if (!Number.isInteger(rg) || rg < 0 || !targetRecord) continue;
+        owner.lk.push([rg, targetRecord.id]);
       }
     });
     P.adds.push(...recs);
-    Viewer.$('ed_sum').textContent = 'placed favourite graph: ' + recs.length + ' linked object(s)';
+    const namedCount = recs.filter(r => r.namedCompanion).length;
+    const reusedCount = skipNamed.size;
+    Viewer.$('ed_sum').textContent = 'placed favourite graph: ' + recs.length + ' object(s)' + (namedCount ? ', including ' + namedCount + ' named runtime companion(s)' : '') + (reusedCount ? '; reused ' + reusedCount + ' existing named companion(s)' : '');
     return base;
   }
 
@@ -866,7 +1060,7 @@ export function installPrefabManager({
   return {
     srcEnt, sourceClass, ensureClass, pushAdds, stripLinkRegs, addMaxId,
     injectMoveControl, resetCaches, invalidateChecks,
-    captureFavoriteGraph, pushFavoriteGraph,
+    captureFavoriteGraph, pushFavoriteGraph, augmentNamedRuntimeCompanions,
     fillPrefabs, showRep, renderFavorites, saveFavorite, placeFavorite
   };
 }

@@ -1,6 +1,6 @@
 // ES-module bootstrap. All application modules import their dependencies directly.
 try {
-  await import('./editor-ui.js?v=step20-ampc-sound-dependencies');
+  await import('./editor-ui.js?v=step21-sneaksentinel-runtime-companions');
   document.documentElement.dataset.editorReady = 'true';
   console.info('I-Ninja Editor v18: ES-module application loaded.');
 } catch (error) {
