@@ -1,4 +1,4 @@
-// ES-module entry point for the existing editor UI.
+// ES-module coordinator for the existing editor UI.
 // Parser, editor, assembler, and viewer APIs are imported directly.
 import {
   parseVol, wadName, readWad, r2, instances, fixups, vs, siWad
@@ -8,6 +8,7 @@ import { IA } from './strat-assembler.js';
 import { Viewer } from './viewer.js';
 import { installModelEditor } from './models-panel.js';
 import { installScriptEditor } from './script-editor.js';
+import { installProjectManager } from './project-manager.js';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -71,7 +72,6 @@ ui.innerHTML='<hr><b>Editor</b> <span class=h>edits go in a project file; game f
  +'<div style="margin-top:4px"><span class=h>add prefab to</span> <select id=ed_lv style="max-width:90px"></select> <select id=ed_cl style="max-width:170px"></select> <button id=ed_add>add</button><br><label class=h title="A spawner links to the objects it spawns. Tick this to copy those objects too, as separate objects that link to each other, so the copy spawns its own set."><input type=checkbox id=ed_deep> also copy the objects it links to</label></div>';
 Viewer.$('ctl').insertBefore(ui,Viewer.$('ctl').firstChild);
 Viewer.$('ed_open').onclick=()=>Viewer.$('ed_pf').click();
-Viewer.$('ed_pf').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());if(j.app!=='ininja-editor')throw'not an editor project';PRJ=j;PRJ.models=PRJ.models||{};PRJ.scripts=PRJ.scripts||{};for(const w in PRJ.wads){PRJ.wads[w].mods=PRJ.wads[w].mods||{};PRJ.wads[w].adds=PRJ.wads[w].adds||[]}Viewer.refresh();Viewer.$('ed_sum').textContent='project loaded: '+f.name+' (apply to levels you load later by loading them again)'}catch(x){Viewer.$('ed_sum').textContent='open failed: '+x}e.target.value=''};
 const getWad=w=>{if(WC[w])return WC[w];const f=Viewer.files.find(x=>x.name===w);if(!f)return null;const[A,B]=readWad(f.buf,f);return WC[w]={A,B,cls:new Set(siWad(A,B).classes.map(c=>c.name))}};
 function summary(){let m=0,a=0,n=0,r=0;for(const w in PRJ.wads){const x=Object.values(PRJ.wads[w].mods).filter(unzero).length,y=PRJ.wads[w].adds.length,z=(PRJ.wads[w].del||[]).length;m+=x;a+=y;r+=z;if(x||y||z)n++}Viewer.$('ed_sum').textContent=m+' moved/edited, '+a+' added, '+r+' removed in '+n+' level(s)'+(Object.keys(PRJ.vols||{}).length>1?' ['+Object.keys(PRJ.vols).join(', ')+']':'')}
 function rmList(){const out=[];for(const lv of Viewer.D){const w=wadOf(lv.id),P=w&&PRJ.wads[w];if(!P||!lv.all0)continue;for(const i of P.del||[])if(lv.all0[i])out.push([w,i,lv.all0[i].n,lv.id])}
@@ -154,28 +154,6 @@ function showRep(){let r=Viewer.$('ed_rep');if(!r){r=document.createElement('div
 Viewer.$('ed_lv').onfocus=Viewer.$('ed_cl').onfocus=()=>fillPrefabs();Viewer.$('ed_lv').onchange=()=>fillPrefabs();Viewer.$('ed_cl').onchange=showRep;
 Viewer.$('ed_add').onclick=()=>{const T=Viewer.$('ed_lv').value,v=Viewer.$('ed_cl').value;if(!T||!v)return;const miss=v[0]==='!',[w,i]=(miss?v.slice(1):v).split('|'),tw=wadOf(T);if(miss){const name=Viewer.$('ed_cl').selectedOptions[0].textContent.split(' (')[0],why=ensureClass(tw,w,name);if(why){showRep();Viewer.$('ed_sum').textContent='cannot add '+name+': '+why;return}}const p=ground(innerWidth/2,innerHeight/2,Viewer.sel?Viewer.sel.p[1]:0)||Viewer.ggame(Viewer.camera.position.clone().addScaledVector(Viewer.fwd(),25));
  const pi=pushAdds(tw,{from:{w,i:+i},p:p.map(r3),dy:0,regs:{}});Viewer.refresh();const lv=Viewer.D.find(l=>l.id===T);Viewer.sel=Viewer.all.find(o=>o.L===T&&o.i===lv.nb+pi);Viewer.inspect(Viewer.sel);edUpdate();Viewer.need=true};
-// ---- project save / patch
-const dl=(parts,name,type)=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(parts,{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),60000)};
-function clean(){const o={};for(const w in PRJ.wads){const P=PRJ.wads[w],mods={};for(const k in P.mods)if(unzero(P.mods[k]))mods[k]=P.mods[k];const del=[...new Set(P.del||[])].sort((a,b)=>a-b),classes=(P.classes||[]).filter(k=>P.adds.some(a=>a.from.w===k.from.w&&(srcCls(a)===k.from.name)));if(Object.keys(mods).length||P.adds.length||del.length)o[w]={vol:volOf(w)||P.vol,mods,adds:P.adds,del,classes,fp:P.fp}}return o}
-// wads that belong to other volumes keep their stored fingerprint; only wads in the loaded volume are checked
-function withFp(){const c=clean();for(const w in c){const g=getWad(w);if(!g)continue;const old=PRJ.wads[w].fp,fp={A:EC.fnv(g.A),B:EC.fnv(g.B)};if(old&&(old.A!==fp.A||old.B!==fp.B))throw w+' does not match the base this project was made for';c[w].fp=fp;c[w].vol=volOf(w)||volName;PRJ.wads[w].fp=fp;PRJ.wads[w].vol=volOf(w)||volName}return c}
-const pending=c=>[...new Set(Object.keys(c).filter(w=>!getWad(w)).map(w=>c[w].vol||w.split('-')[0]+'.vol'))];
-Viewer.$('ed_save').onclick=()=>{try{if(!isVol())throw'load a .vol first';const wads=withFp();{const vv={...PRJ.vols};for(const f of Viewer.files)if(f.vol)vv[f.vol]=f.buf.byteLength;PRJ.vols=vv}const scr=buildScriptWadsFp();dl([JSON.stringify({app:'ininja-editor',v:1,vols:PRJ.vols,models:PRJ.models||{},wads,scripts:scr},null,1)],'ininja-project.json','application/json');Viewer.$('ed_sum').textContent='project saved: '+Object.keys(wads).length+' level(s) with instance edits, '+Object.keys(scr).length+' with code edits (holds only your edits, no game data)'}catch(x){Viewer.$('ed_sum').textContent='save failed: '+x}};
-Viewer.$('ed_patch').onclick=async()=>{try{if(!isVol())throw'load the original .vol first';const wads=withFp(),sc=buildScriptWadsFp(),names=[...new Set([...Object.keys(wads),...Object.keys(sc)])].filter(w=>getWad(w)),pend=[...new Set([...pending(wads),...Object.keys(sc).filter(w=>!getWad(w)).map(w=>sc[w].vol||w.split('-')[0]+'.vol')])];if(!names.length)throw'the project has no edits for '+loadedVols().join(', ')+(pend.length?' (it has edits for '+pend.join(', ')+': load that volume and build again)':'');
-  const byVol={};for(const w of names)(byVol[volOf(w)]=byVol[volOf(w)]||[]).push(w);
-  const srcWad=n=>getWad(n),healed=[],outs=[];let i=0;
-  for(const V of Object.keys(byVol)){const rep={},plans={};
-   for(const w of byVol[V]){Viewer.$('ed_sum').textContent='patching '+w+' ('+ ++i+'/'+names.length+')...';await new Promise(r=>setTimeout(r));
-   const f=Viewer.files.find(x=>x.name===w),hdr=new Uint8Array(f.buf,f.off,new DataView(f.buf,f.off).getUint32(4,true)+16).slice(),g=getWad(w);let A=g.A,B=g.B;if(sc[w]){const bl=new Map(Object.entries(sc[w].blocks).map(([k,v])=>[+k,v])),x=IA.relink(A,B,bl),v=IA.verify(IA.wadCtx(A,B),x.A,x.B,x.info.relocs,new Set(bl.keys()));if(v.bad.length)throw w+': code edit verification failed: '+v.bad.slice(0,3).join('; ');A=x.A;B=x.B}const sp=sndPlan(w),r0=wads[w]?EC.patchLcs(A,B,wads[w],w,srcWad,{snd:sp}):{A,B},r=EC.healResDir(r0.A,r0.B);if(r.added.tex||r.added.mesh)healed.push(w+' (+'+r.added.tex+' tex, +'+r.added.mesh+' mesh)');if(sp&&sp.adds.length){const dh=new DataView(hdr.buffer,hdr.byteOffset);dh.setUint32(0x78,sp.h78,true);dh.setUint32(0x7c,sp.h7c,true);plans[w]=sp}rep[w]=EC.packWad(hdr,r.A,r.B)}
-   // copied sounds: rebuild the affected levels' .PCA (resident block + streamed block) and lay this volume's .avl out again
-   let ap=null,avlOut='';if(Object.keys(plans).length){const need=new Set([V]);for(const w in plans)for(const a of plans[w].adds)need.add(volOf(a.w));for(const v of need)await avlLoad(v);
-    const pn=n=>n.replace(/\.LCS$/i,'.PCA'),pcaOf=n=>{const a=AVLS[vbase(volOf(n))],e=a&&a.list&&a.list.find(x=>x.name===pn(n));if(!e)throw'no '+pn(n)+' in '+(a?a.name:vbase(volOf(n))+'.avl');return new Uint8Array(a.buf,e.off,e.size)},rep2={};
-    for(const w in plans)rep2[pn(w)]=EC.buildPca(pcaOf(w),plans[w],sw=>{const sf=Viewer.files.find(x=>x.name===sw);return sf?{pca:pcaOf(sw),h78:new DataView(sf.buf,sf.off).getUint32(0x78,true)}:null});
-    const A=AVLS[vbase(V)];ap=EC.rebuildVol(A.buf,rep2);avlOut=A.name.replace(/\.avl$/i,'')+'.patched.avl'}
-   const vf=Viewer.files.find(x=>x.vol===V);outs.push({V,parts:EC.rebuildVol(vf.buf,rep),out:V.replace(/\.vol$/i,'')+'.patched.vol',ap,avlOut,A:ap&&AVLS[vbase(V)].name,n:byVol[V]})}
-  // one download per file, spaced out so the browser does not drop them
-  let k=0;for(const o of outs){setTimeout(()=>dl(o.parts,o.out,'application/octet-stream'),600*k++);if(o.ap)setTimeout(()=>dl(o.ap,o.avlOut,'application/octet-stream'),600*k++)}
-  Viewer.$('ed_sum').textContent='built '+outs.map(o=>o.out+(o.ap?' + '+o.avlOut:'')).join(', ')+' ('+names.join(', ')+'). Back up your originals, then replace each with its patched file (rename it to the original name).'+(outs.some(o=>o.ap)?' Sounds were copied, so a patched .avl was built for '+outs.filter(o=>o.ap).map(o=>o.V).join(', ')+': install it together with its .vol.':'')+(healed.length?' Added missing entries to the level resource directory: '+healed.join(', ')+'.':'')+(pend.length?' Still to build: '+pend.join(', ')+' (load it, open the same project, build).':'')}catch(x){Viewer.$('ed_sum').textContent='patch failed: '+x;console.error(x)}};
 // remember the volume's file name; accept project .json through the normal file picker / drop
 const oof=Viewer.openFiles;Viewer.openFiles=async fs=>{fs=[...fs];
  // .avl files are paired with the .vol of the same name (10.avl <-> 10.vol); they are only read when a build needs them
@@ -188,7 +166,6 @@ const oof=Viewer.openFiles;Viewer.openFiles=async fs=>{fs=[...fs];
   if(dup.length)Viewer.$('st').textContent+='\nskipped duplicate file names (already in another volume): '+dup.slice(0,6).join(', ')+(dup.length>6?', ...':'')}
  if(vs.length||avls.length){const t=Viewer.$('ed_sum');if(t){const L=loadedVols();t.textContent='volumes: '+(L.map(v=>v+' ('+(avlOk(v)?vbase(v)+'.avl found':'no '+vbase(v)+'.avl: sounds of its levels cannot be copied')+')').join(', ')||'none')+(avls.some(a=>!L.some(v=>vbase(v)===vbase(a.name)))?'. Waiting for the .vol that goes with '+avls.filter(a=>!L.some(v=>vbase(v)===vbase(a.name))).map(a=>a.name).join(', '):'')}}
  return fs.length?oof(fs):undefined};
-const olj=Viewer.loadJson;Viewer.loadJson=async f=>{let j;try{j=JSON.parse(await f.text())}catch(e){}if(j&&j.app==='ininja-editor'){PRJ=j;PRJ.models=PRJ.models||{};PRJ.scripts=PRJ.scripts||{};for(const w in PRJ.wads){PRJ.wads[w].mods=PRJ.wads[w].mods||{};PRJ.wads[w].adds=PRJ.wads[w].adds||[]}if(Viewer.D.length)Viewer.refresh();Viewer.$('st').textContent='editor project loaded ('+f.name+'); load its levels to see the edits';return}return olj(f)};
 const oi=Viewer.inspect;Viewer.inspect=q=>{oi(q);edUpdate()};
 
 // Install the separate Models feature after shared project services are ready.
@@ -203,6 +180,9 @@ Viewer.$('ed_stb').onclick=async()=>{try{if(!isVol())throw'load a .vol first';co
   let rp=Viewer.$('ed_rep');if(!rp){showRep();rp=Viewer.$('ed_rep')}rp.textContent=Object.entries(r.errors).map(([k,n])=>n+' x '+k).concat(r.bad).join('\n');rp.style.whiteSpace='pre-wrap'}catch(x){Viewer.$('ed_sum').textContent='self-test failed: '+x;console.error(x)}};
 // The Scripts-tab assembly editor owns code-edit UI and project fingerprint generation.
 buildScriptWadsFp=installScriptEditor({Viewer,IA,EC,getWad,wadOf,isVol,volOf,getVolName:()=>volName,getProject:()=>PRJ}).scriptWadsFp;
+
+// Project open/save and VOL/AVL patching are handled by their own module.
+const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setProject:j=>{PRJ=j},isVol,getWad,volOf,getVolName:()=>volName,loadedVols,buildScriptWadsFp,sndPlan,avlLoad,avlOk,vbase,getAvl:v=>AVLS[vbase(v)],sourceClass:srcCls,unzero});
 
 // ---- copying objects: linked children (deep copy), moving an added object to another level, script info for added objects
 const LKC={};
