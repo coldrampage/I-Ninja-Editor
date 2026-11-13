@@ -9,9 +9,9 @@ const bootstrap = read('js/bootstrap.js');
 const ui = read('js/editor-ui.js');
 const prefabs = read('js/prefabs.js');
 
-assert.match(html, /js\/bootstrap\.js\?v=step16-cylinder-resize/, 'index.html requests versioned bootstrap');
-assert.match(htmlAlias, /js\/bootstrap\.js\?v=step16-cylinder-resize/, 'consolidated HTML alias requests versioned bootstrap');
-assert.match(bootstrap, /import\(\'\.\/editor-ui\.js\?v=step16-cylinder-resize\'\)/, 'bootstrap imports a versioned coordinator');
+assert.match(html, /js\/bootstrap\.js\?v=step17-waypoint-paths/, 'index.html requests versioned bootstrap');
+assert.match(htmlAlias, /js\/bootstrap\.js\?v=step17-waypoint-paths/, 'consolidated HTML alias requests versioned bootstrap');
+assert.match(bootstrap, /import\(\'\.\/editor-ui\.js\?v=step17-waypoint-paths\'\)/, 'bootstrap imports a versioned coordinator');
 assert.match(ui, /const\s+getWad\s*=\s*w\s*=>/, 'coordinator defines getWad');
 assert.match(ui, /installModelEditor\(\{[\s\S]{0,400}getWad/, 'getWad is injected into Models');
 assert.match(ui, /installScriptEditor\(\{[\s\S]{0,400}getWad/, 'getWad is injected into Scripts');
@@ -31,10 +31,16 @@ console.log('Prefab-module deployment smoke test passed.');
 assert.match(ui, /import \{ installProjectManager \} from '\.\/project-manager\.js\?v=step14-camera-source-variants'/, 'coordinator imports the updated project manager with a cache key');
 
 assert.match(ui, /editor-core\.js\?v=step16-cylinder-resize/, 'coordinator imports updated editor core');
-assert.match(ui, /viewer\.js\?v=step16-cylinder-resize/, 'coordinator imports the updated viewer');
-assert.match(ui, /entity-editor\.js\?v=step16-cylinder-resize/, 'coordinator imports the updated entity editor');
+assert.match(ui, /viewer\.js\?v=step17-waypoint-paths/, 'coordinator imports the updated viewer');
+assert.match(ui, /entity-editor\.js\?v=step17-waypoint-paths/, 'coordinator imports the updated entity editor');
 assert.match(ui, /models-panel\.js\?v=step16-cylinder-resize/, 'model panel is reloaded to share the updated viewer instance');
 const modelPanel = read('js/models-panel.js');
-assert.match(modelPanel, /viewer\.js\?v=step16-cylinder-resize/, 'Models panel imports the exact same versioned Viewer instance as the coordinator');
+assert.match(modelPanel, /viewer\.js\?v=step17-waypoint-paths/, 'Models panel imports the exact same versioned Viewer instance as the coordinator');
 assert.match(readFileSync(new URL('../js/entity-editor.js', import.meta.url), 'utf8'), /trigger-editor\.js\?v=step16-cylinder-resize/, 'entity editor imports trigger editor');
 console.log('Trigger editor deployment cache smoke test passed.');
+
+assert.match(ui, /viewer\.js\?v=step17-waypoint-paths/, 'coordinator imports the waypoint overlay Viewer');
+assert.match(ui, /setPathOverlayRender/, 'coordinator injects the waypoint path overlay callback');
+assert.match(read('js/entity-editor.js'), /path-editor\.js\?v=step17-waypoint-paths/, 'entity editor imports the waypoint path module');
+assert.match(read('js/models-panel.js'), /viewer\.js\?v=step17-waypoint-paths/, 'Models panel shares the waypoint overlay Viewer instance');
+console.log('Waypoint path module deployment cache test passed.');

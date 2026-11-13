@@ -5,11 +5,11 @@ import {
 } from './vol-core.js';
 import { EC } from './editor-core.js?v=step16-cylinder-resize';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender } from './viewer.js?v=step16-cylinder-resize';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step17-waypoint-paths';
 import { installModelEditor } from './models-panel.js?v=step16-cylinder-resize';
 import { installScriptEditor } from './script-editor.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step16-cylinder-resize';
+import { installEntityEditor } from './entity-editor.js?v=step17-waypoint-paths';
 import { installPrefabManager } from './prefabs.js?v=step16-cylinder-resize';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
@@ -169,9 +169,11 @@ const qm=(a,b)=>[a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1
 const base=e=>e.base||(e.base={p:e.p.slice(),b:e.b&&e.b.slice(),poly:e.poly&&e.poly.slice(),path:e.path&&e.path.map(n=>n.slice()),shape:e.shape,pathbox:!!e.pathbox,xzOnly:!!e.xzOnly,r:e.r,q:e.q&&e.q.slice(),pv:e.params.map(p=>p.v)});
 function put(e,m){const B=base(e),d=m.d||[0,0,0],dy=m.dy||0,dp=m.dp||0,dr=m.dr||0;e.p=B.p.map((v,k)=>r2(v+d[k]));e.b=B.b&&B.b.map((v,k)=>r2(v+d[k%3]));e.poly=B.poly&&B.poly.map((v,k)=>r2(v+d[k%3]));e.shape=B.shape;e.pathbox=B.pathbox;e.xzOnly=B.xzOnly;
  if(m.trigger){const t=m.trigger;e.shape=t.ty;e.pathbox=false;e.xzOnly=[0,2,5].includes(t.ty);e.b=t.box.map((v,k)=>r2(v+e.p[k%3]));e.poly=t.poly?t.poly.map((v,k)=>r2(v+e.p[k%3])):null}
- e.path=B.path&&B.path.map(n=>n.map((v,k)=>r2(v+d[k])));e.r=B.r+dy;if(B.q){const g2=x=>x/4096*2*Math.PI,ay=g2(dy),ap=g2(dp),ar=g2(dr);e.q=qm(qm([0,Math.sin(ay/2),0,Math.cos(ay/2)],B.q),qm([Math.sin(ap/2),0,0,Math.cos(ap/2)],[0,0,Math.sin(ar/2),Math.cos(ar/2)]))}
+ e.path=m.path?m.path.map(n=>n.map((v,k)=>r2(v+e.p[k]))):B.path&&B.path.map(n=>n.map((v,k)=>r2(v+d[k])));
+ if(e.pathbox&&e.path&&e.path.length>=2){const a=e.path[0],b=e.path[1];e.b=[0,1,2].map(k=>Math.min(a[k],b[k])).concat([0,1,2].map(k=>Math.max(a[k],b[k])));}
+ e.r=B.r+dy;if(B.q){const g2=x=>x/4096*2*Math.PI,ay=g2(dy),ap=g2(dp),ar=g2(dr);e.q=qm(qm([0,Math.sin(ay/2),0,Math.cos(ay/2)],B.q),qm([Math.sin(ap/2),0,0,Math.cos(ap/2)],[0,0,Math.sin(ar/2),Math.cos(ar/2)]))}
  e.params=e.params.map((p,k)=>m.regs&&m.regs[k]!==undefined&&!p.s?{...p,v:m.regs[k]>>>0}:{...p,v:B.pv[k]})}
-const unzero=m=>m.d.some(x=>x)||m.dy||m.dp||m.dr||Object.keys(m.regs).length||(m.lk&&m.lk.length)||!!m.trigger;
+const unzero=m=>m.d.some(x=>x)||m.dy||m.dp||m.dr||Object.keys(m.regs).length||(m.lk&&m.lk.length)||!!m.trigger||!!m.path;
 // Shared project status and removed-entity restoration UI. These stayed in the
 // coordinator when entity editing moved into entity-editor.js because Models
 // and Entity Editor both use them.
@@ -194,7 +196,7 @@ function applyEdits(){for(const lv of Viewer.D){const w=wadOf(lv.id);if(!w)conti
     Viewer.analyseLevel(lv.id);
    }
    const s=srcEnt(a);if(!s)return;const B=base(s),e={...s,params:s.params.map(p=>({...p})),i:lv.nb+k,added:k+1,base:{...B}};
-   put(e,{d:a.p.map((v,j)=>v-B.p[j]),dy:a.dy||0,dp:a.dp||0,dr:a.dr||0,regs:a.regs,trigger:a.trigger});lv.ents.push(e);
+   put(e,{d:a.p.map((v,j)=>v-B.p[j]),dy:a.dy||0,dp:a.dp||0,dr:a.dr||0,regs:a.regs,trigger:a.trigger,path:a.path});lv.ents.push(e);
    const sl=Viewer.SCR.levels[srcLevel],tl=Viewer.SCR.levels[lv.id];
    if(sl&&sl[s.i]&&tl)tl[e.i]=linkView(lv,P,sl[s.i],a,srcLevel===lv.id,true)
   });
@@ -252,7 +254,7 @@ const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setP
 
 const entityEditor=installEntityEditor({
   Viewer,EC,getProject:()=>PRJ,wadOf,getWad,WS,base,put,unzero,srcEnt,
-  addMaxId:prefabManager.addMaxId,ensureClass:prefabManager.ensureClass,pushAdds:prefabManager.pushAdds,stripLinkRegs:prefabManager.stripLinkRegs,summary,rmList,r3,setTriggerOverlayRender
+  addMaxId:prefabManager.addMaxId,ensureClass:prefabManager.ensureClass,pushAdds:prefabManager.pushAdds,stripLinkRegs:prefabManager.stripLinkRegs,summary,rmList,r3,setTriggerOverlayRender,setPathOverlayRender
 });
 edUpdate=entityEditor.update;
 rec=entityEditor.rec;

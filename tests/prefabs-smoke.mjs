@@ -92,14 +92,18 @@ assert.equal(project.wads['10-00.LCS'].adds[1], add, 'a normal prefab is recorde
 manager.resetCaches();
 linkMode = true;
 element('ed_deep').checked = true;
+project.wads['10-00.LCS'].mods[1] = { path: [[1, 0, 0], [2, 0, 0]] };
 const deepStart = manager.pushAdds('10-00.LCS', {
-  from: { w: '10-00.LCS', i: 0 }, p: [5, 0, 6], dy: 0, regs: {}
+  from: { w: '10-00.LCS', i: 0 }, p: [5, 0, 6], dy: 0, regs: {},
+  path: [[-1, 0, 0], [1, 0, 0]]
 });
 const deepAdds = project.wads['10-00.LCS'].adds.slice(deepStart);
 assert.equal(deepAdds.length, 2, 'deep copy includes the linked child');
 assert.deepEqual(deepAdds[0].lk, [[0, deepAdds[1].id]], 'root is rewired to its copied child');
 assert.deepEqual(deepAdds[1].lk, [[0, deepAdds[0].id]], 'child is rewired back to its copied root');
 assert.deepEqual(deepAdds[1].p, [14, 2, 16], 'child placement preserves its source offset from the root');
+assert.deepEqual(deepAdds[0].path, [[-1, 0, 0], [1, 0, 0]], 'deep-copied root retains its waypoint override');
+assert.deepEqual(deepAdds[1].path, [[1, 0, 0], [2, 0, 0]], 'deep-copied original child retains its waypoint override');
 linkMode = false;
 
 const links = { from: { w: '10-00.LCS', i: 0 }, regs: { 0: 123 }, lk: [[1, 99]] };
@@ -124,15 +128,15 @@ Viewer.sel = { L: '10-00', i: 0, p: [1, 2, 3], n: 'TestPrefab' };
 // A linked child can carry its own register overrides, rotation and a custom
 // link to a second copied child. These values must survive save/export/place.
 project.wads['10-00.LCS'].mods = {
-  1: { d: [1, 0, -1], dy: 64, dp: 8, dr: 0, regs: { 2: 54321 }, trigger: { ty: 3, box: [-4, -2, -4, 4, 2, 4], poly: null }, lk: [[0, 77]] }
+  1: { d: [1, 0, -1], dy: 64, dp: 8, dr: 0, regs: { 2: 54321 }, path: [[0, 0, 1], [1, 1, 2]], trigger: { ty: 3, box: [-4, -2, -4, 4, 2, 4], poly: null }, lk: [[0, 77]] }
 };
 project.wads['10-00.LCS'].adds.push({
   from: { w: '10-00.LCS', i: 1 }, p: [16, 4, 19], dy: 32, dp: 0, dr: 0,
-  regs: { 3: 67890 }, trigger: { ty: 5, box: [-2, -1, -2, 2, 1, 2], poly: [-2, 0, -2, 2, 0, -2, 2, 0, 2, -2, 0, 2] }, id: 77, lk: []
+  regs: { 3: 67890 }, path: [[-2, 0, 0], [2, 0, 0]], trigger: { ty: 5, box: [-2, -1, -2, 2, 1, 2], poly: [-2, 0, -2, 2, 0, -2, 2, 0, 2, -2, 0, 2] }, id: 77, lk: []
 });
 selectedRecord = {
   e: source, w: '10-00.LCS',
-  m: { dy: 256, dp: 16, dr: -8, regs: { 1: 12345 }, trigger: { ty: 4, box: [-3, -3, -3, 3, 3, 3], poly: null }, lk: [] }
+  m: { dy: 256, dp: 16, dr: -8, regs: { 1: 12345 }, path: [[-1, 0, 0], [0, 1, 2]], trigger: { ty: 4, box: [-3, -3, -3, 3, 3, 3], poly: null }, lk: [] }
 };
 element('ed_fav_name').value = 'Shielded Ranx';
 element('ed_fav_category').value = 'Generators';
@@ -149,6 +153,9 @@ assert.equal(project.prefabs[0].nodes.length, 3, 'favourite stores the full link
 assert.equal(project.prefabs[0].nodes[1].dy, 64, 'favourite captures child rotation edits');
 assert.equal(project.prefabs[0].nodes[1].regs[2], 54321, 'favourite captures child register overrides');
 assert.equal(project.prefabs[0].nodes[0].trigger.ty, 4, 'favourite captures the root trigger override');
+assert.deepEqual(project.prefabs[0].nodes[0].path, [[-1, 0, 0], [0, 1, 2]], 'favourite captures root waypoint overrides');
+assert.deepEqual(project.prefabs[0].nodes[1].path, [[0, 0, 1], [1, 1, 2]], 'favourite captures linked-child waypoint overrides');
+assert.deepEqual(project.prefabs[0].nodes[2].path, [[-2, 0, 0], [2, 0, 0]], 'favourite captures added-child waypoint overrides');
 assert.equal(project.prefabs[0].nodes[1].trigger.ty, 3, 'favourite captures the linked original child trigger override');
 assert.equal(project.prefabs[0].nodes[2].trigger.ty, 5, 'favourite captures the project-added child trigger override');
 assert.deepEqual(project.prefabs[0].nodes[1].links, [[0, 2]], 'favourite captures child custom links by graph index');
@@ -166,13 +173,16 @@ assert.equal(placed.length, 3, 'placing a favourite copies every linked child an
 assert.equal(placed[0].dy, 256, 'favourite root rotation override is applied');
 assert.equal(placed[0].regs[1], 12345, 'favourite root register override is applied');
 assert.equal(placed[0].trigger.ty, 4, 'placed favourite root retains its trigger override');
+assert.deepEqual(placed[0].path, [[-1, 0, 0], [0, 1, 2]], 'placed root retains waypoint overrides');
 assert.deepEqual(placed[0].lk, [[0, placed[1].id]], 'placed favourite reconnects root to its copied child');
 assert.deepEqual(placed[1].lk, [[0, placed[2].id]], 'placed favourite reconnects the edited child to its custom linked child');
 assert.equal(placed[1].dy, 64, 'placed linked child keeps its rotation adjustment');
 assert.equal(placed[1].regs[2], 54321, 'placed linked child keeps its register overrides');
 assert.equal(placed[1].trigger.ty, 3, 'placed linked child keeps its trigger override');
+assert.deepEqual(placed[1].path, [[0, 0, 1], [1, 1, 2]], 'placed linked child keeps waypoint overrides');
 assert.equal(placed[2].regs[3], 67890, 'placed custom child keeps its own register overrides');
 assert.equal(placed[2].trigger.ty, 5, 'placed custom child keeps its trigger override');
+assert.deepEqual(placed[2].path, [[-2, 0, 0], [2, 0, 0]], 'placed custom child keeps waypoint overrides');
 assert.deepEqual(placed[2].lk, [[0, placed[0].id]], 'placed custom child reconnects to the root');
 
 // The same project-wide favourite can be placed in another compatible level.
@@ -233,6 +243,9 @@ assert.ok(roundTrip, 'exported graph favourite can be imported into a fresh proj
 assert.equal(roundTrip.nodes.length, 3, 'library round-trip retains every linked graph node');
 assert.equal(roundTrip.nodes[1].regs[2], 54321, 'library round-trip retains child register overrides');
 assert.equal(roundTrip.nodes[0].trigger.ty, 4, 'library round-trip retains root trigger overrides');
+assert.deepEqual(roundTrip.nodes[0].path, [[-1, 0, 0], [0, 1, 2]], 'library round-trip retains root waypoint overrides');
+assert.deepEqual(roundTrip.nodes[1].path, [[0, 0, 1], [1, 1, 2]], 'library round-trip retains linked-child waypoint overrides');
+assert.deepEqual(roundTrip.nodes[2].path, [[-2, 0, 0], [2, 0, 0]], 'library round-trip retains added-child waypoint overrides');
 assert.equal(roundTrip.nodes[1].trigger.ty, 3, 'library round-trip retains linked child trigger overrides');
 assert.equal(roundTrip.nodes[2].trigger.ty, 5, 'library round-trip retains added child trigger overrides');
 assert.deepEqual(roundTrip.nodes[1].links, [[0, 2]], 'library round-trip retains child link topology');

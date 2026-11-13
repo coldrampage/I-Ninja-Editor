@@ -1,9 +1,10 @@
 import { installTriggerEditor } from './trigger-editor.js?v=step16-cylinder-resize';
+import { installPathEditor } from './path-editor.js?v=step17-waypoint-paths';
 // Entity inspector, transforms, register editing, link reassignment and entity copy/paste.
 // All application state and cross-feature operations are injected by the coordinator.
 export function installEntityEditor({
   Viewer, EC, getProject, wadOf, getWad, WS, base, put, unzero, srcEnt,
-  addMaxId, ensureClass, pushAdds, stripLinkRegs, summary, rmList, r3, setTriggerOverlayRender = () => {}
+  addMaxId, ensureClass, pushAdds, stripLinkRegs, summary, rmList, r3, setTriggerOverlayRender = () => {}, setPathOverlayRender = () => {}
 }) {
   let clip = null;
   let grab = false;
@@ -34,7 +35,7 @@ export function installEntityEditor({
       put(R.e, {
         d: R.add.p.map((v, j) => v - B.p[j]),
         dy: R.add.dy || 0, dp: R.add.dp || 0, dr: R.add.dr || 0,
-        regs: R.add.regs, trigger: R.add.trigger
+        regs: R.add.regs, trigger: R.add.trigger, path: R.add.path
       });
     } else {
       put(R.e, R.m);
@@ -78,9 +79,19 @@ export function installEntityEditor({
     else delete H.trigger;
     redo(R);
   }
+  function setPath(R, path) {
+    const H = R.add || R.m;
+    if (path) H.path = path.map(node => node.map((v, k) => r3(v - R.e.p[k])));
+    else delete H.path;
+    redo(R);
+  }
   const triggerEditor = installTriggerEditor({
     Viewer, setOverlayRender: setTriggerOverlayRender,
     commit: (q, trigger) => { const R = rec(q); if (R) setTrigger(R, trigger); }
+  });
+  const pathEditor = installPathEditor({
+    Viewer, setOverlayRender: setPathOverlayRender,
+    commit: (q, path) => { const R = rec(q); if (R) setPath(R, path); }
   });
 
   const nudge = (dx, dy, dz, dyaw) => {
@@ -103,6 +114,7 @@ export function installEntityEditor({
     if (!R) {
       S.innerHTML = '<span class=h>click an entity to edit it</span>';
       triggerEditor.render(S, null, null);
+      pathEditor.render(S, null, null);
       return;
     }
     const e = R.e, f = (id, v, st) => '<input type=number id=' + id + ' value="' + v + '" step=' + st + ' style="width:62px">';
@@ -120,6 +132,7 @@ export function installEntityEditor({
       }).join('') + '<div class=h>raw 32-bit values (floats are stored as their bit pattern). A register that links to another object has a link... button: press it, then click the object to link to (same level; Esc cancels).</div></details>' : '');
 
     triggerEditor.render(S, Viewer.sel, R);
+    pathEditor.render(S, Viewer.sel, R);
     const g = id => +Viewer.$(id).value;
     for (const id of ['ed_x', 'ed_y', 'ed_z']) Viewer.$(id).onchange = () => setPos(R, [g('ed_x'), g('ed_y'), g('ed_z')]);
     Viewer.$('ed_w').onchange = () => setYaw(R, g('ed_w'));
@@ -233,8 +246,8 @@ export function installEntityEditor({
     if (!R) return;
     const H = R.add || R.m;
     clip = R.add
-      ? { from: { ...R.add.from }, dy: R.add.dy || 0, dp: R.add.dp || 0, dr: R.add.dr || 0, regs: { ...R.add.regs }, trigger: R.add.trigger && { ty: R.add.trigger.ty, box: R.add.trigger.box.slice(), poly: R.add.trigger.poly && R.add.trigger.poly.slice() } }
-      : { from: { w: R.w, i: R.e.i }, dy: R.m.dy || 0, dp: R.m.dp || 0, dr: R.m.dr || 0, regs: { ...R.m.regs }, trigger: R.m.trigger && { ty: R.m.trigger.ty, box: R.m.trigger.box.slice(), poly: R.m.trigger.poly && R.m.trigger.poly.slice() } };
+      ? { from: { ...R.add.from }, dy: R.add.dy || 0, dp: R.add.dp || 0, dr: R.add.dr || 0, regs: { ...R.add.regs }, trigger: R.add.trigger && { ty: R.add.trigger.ty, box: R.add.trigger.box.slice(), poly: R.add.trigger.poly && R.add.trigger.poly.slice() }, path: R.add.path && R.add.path.map(n => n.slice()) }
+      : { from: { w: R.w, i: R.e.i }, dy: R.m.dy || 0, dp: R.m.dp || 0, dr: R.m.dr || 0, regs: { ...R.m.regs }, trigger: R.m.trigger && { ty: R.m.trigger.ty, box: R.m.trigger.box.slice(), poly: R.m.trigger.poly && R.m.trigger.poly.slice() }, path: R.m.path && R.m.path.map(n => n.slice()) };
     clip.lk = (H.lk || []).map(l => l.slice());
     clip.at = R.w;
     Viewer.$('ed_sum').textContent = 'copied ' + R.e.n;
@@ -254,7 +267,7 @@ export function installEntityEditor({
       const sp = Viewer.sel.p, g = ground(mouse.x, mouse.y, Viewer.sel.p[1]);
       return g || [sp[0] + 3, sp[1], sp[2] + 3];
     })();
-    const a = { from: { ...clip.from }, p: p.map(r3), dy: clip.dy, dp: clip.dp || 0, dr: clip.dr || 0, regs: { ...clip.regs }, trigger: clip.trigger && { ty: clip.trigger.ty, box: clip.trigger.box.slice(), poly: clip.trigger.poly && clip.trigger.poly.slice() } };
+    const a = { from: { ...clip.from }, p: p.map(r3), dy: clip.dy, dp: clip.dp || 0, dr: clip.dr || 0, regs: { ...clip.regs }, trigger: clip.trigger && { ty: clip.trigger.ty, box: clip.trigger.box.slice(), poly: clip.trigger.poly && clip.trigger.poly.slice() }, path: clip.path && clip.path.map(n => n.slice()) };
     if (clip.at === w && clip.lk && clip.lk.length) a.lk = clip.lk.map(l => l.slice());
     else stripLinkRegs(a);
     // Cross-level clones require the source class and its dependencies in the target level.
@@ -303,6 +316,7 @@ export function installEntityEditor({
     setYaw: (q, deg) => { const R = rec(q); if (R) setYaw(R, deg); },
     setRegister: (q, k, v) => { const R = rec(q); if (R) setReg(R, k, v); },
     setTrigger: (q, trigger) => { const R = rec(q); if (R) setTrigger(R, trigger); },
+    setPath: (q, path) => { const R = rec(q); if (R) setPath(R, path); },
     copy,
     paste,
     ground,

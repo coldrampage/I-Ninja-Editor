@@ -121,4 +121,4 @@ markup = '';
 editor.render(container, { ...q, i: 5 }, { e: pathEntity, m: {} });
 assert.match(markup, /waypoint-defined box/, 'path-derived NextArea trigger is clearly identified');
 assert.doesNotMatch(markup, /ed_tr_type/, 'path-derived trigger does not expose an ineffective shape editor');
-console.log('PASS path-derived NextArea trigger is identified as read-only until path-node editing is implemented');
+console.log('PASS path-derived NextArea trigger stays read-only in the shape editor and is handled by the waypoint path editor');
