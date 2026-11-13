@@ -134,11 +134,17 @@ function rebuildVol(ab,replaced){const files=parseVol(ab),d=new DataView(ab),u8=
 // instances whose link registers point at instance idx
 function referrers(A,B,idx){const imp=fixups(B),h=(imp[0x8000010e]||[])[0];if(h==null)return[];const d=new DataView(A.buffer,A.byteOffset,A.length),U=o=>d.getUint32(o,true),ins=U(h+0x28),lnk=U(h+0x2c),nl=d.getUint16(h+0x32,true),out=new Set();
  for(let i=0;i<nl;i++){const ow=d.getUint16(lnk+4*i,true),rg=d.getUint16(lnk+4*i+2,true),ip=U(ins+ow*INS+0x2c);if(ow!==idx&&U(ip+4*rg)===idx)out.add(ow)}return[...out]}
-// ops.classes=[{from:{w,name}}]: classes the target lacks are transplanted first (class code, record, events, data), then the instance edits run on the result
+// ops.classes=[{from:{w,name},variants:[{name,alias}]}]: copy source-specific same-name dependencies
+// under private aliases so importing one level's class cannot silently bind to a different
+// implementation/resource set already present in the destination.
 function patchLcs(A0,B0,ops,wadName,srcWad,env){
  for(const k of ops.classes||[]){const sw=k.from.w===wadName?{A:A0,B:B0}:srcWad(k.from.w);if(!sw)throw'class source '+k.from.w+' not found';const S=SrcCtx(sw.A,sw.B);S.wadName=k.from.w;
-  const tc=new Map(siWad(A0,B0).classes.map(c=>[c.name,c.off]));if(tc.has(k.from.name))continue;   // already there (e.g. an earlier entry copied it as part of its block)
-  const T=SrcCtx(A0,B0),r=transplantClasses(A0,B0,S,[k.from.name],{res:resResolver(S,T).hook,cls:n=>tc.get(n),addRes:true,snd:env&&env.snd});A0=r.A;B0=r.B}
+  const tc=new Map(siWad(A0,B0).classes.map(c=>[c.name,c.off])),variants=k.variants||[],aliases=Object.fromEntries(variants.map(v=>[v.name,v.alias]));
+  const names=[];if(!tc.has(k.from.name))names.push(k.from.name);
+  for(const v of variants)if(!tc.has(v.alias))names.push(v.name);
+  if(!names.length)continue;   // root and all recorded source variants are already present
+  const T=SrcCtx(A0,B0),cls=n=>(aliases[n]&&tc.has(aliases[n])?tc.get(aliases[n]):tc.get(n));
+  const r=transplantClasses(A0,B0,S,names,{res:resResolver(S,T).hook,cls,addRes:true,snd:env&&env.snd},{allowDup:variants.length>0,aliases});A0=r.A;B0=r.B}
  return patchLcs0(A0,B0,ops,wadName,srcWad,env)}
 // ---- read-only dependency report for every class of a strat wad: follows the code the class can actually run (entry + its handlers + called subroutines) and classifies every pointer in it
 const KN={1:'texture',4:'level data',6:'material',7:'material',8:'skeleton/animation',0x20:'draw part',0x21:'mesh part',0x22:'mesh part',0x23:'vertex buffer',0x24:'mesh',0x113:'sound bank',0x115:'sound'};
@@ -360,7 +366,9 @@ function transplantOnce(A0,B0,S,names,hooks,opt){opt=opt||{};const bld=Builder(A
  const tcls=[];for(let i=0;i<ncl;i++){const o=cl0+i*0x2c;tcls.push({off:o,name:siCstr(A0,U(o+4)),ev0:U(o+0x24),st0:U(o+0x28),bind:U(o+0x1c),pool:U(o+0x20)})}
  const evLo=Math.min(cl0,...tcls.map(c=>c.ev0)),bindStart=Math.min(ins,...tcls.map(c=>c.bind));
  const grp=groupOf(S,names).map(i=>S.w.classes[i]);
- for(const c of grp)if(tcls.some(t=>t.name===c.name)&&!opt.allowDup)throw'class '+c.name+' already exists in the target';
+ for(const c of grp){const collision=tcls.some(t=>t.name===c.name),alias=opt.aliases&&opt.aliases[c.name];
+  if(collision&&(!opt.allowDup||!alias))throw'class '+c.name+' already exists in the target (a private alias is required to preserve this source variant)';
+  if(alias&&tcls.some(t=>t.name===alias))throw'class alias '+alias+' already exists in the target'}
  const blocks=[...new Set(grp.map(c=>S.U(c.off+0xc)))].sort((a,b)=>a-b).map(bs=>S.w.blocks.find(([p])=>p===bs)).map(([p,n])=>({p,n}));
  for(const bk of blocks)if(!bk)throw'class block not found';
  // 1) new region addresses
@@ -396,7 +404,7 @@ function transplantOnce(A0,B0,S,names,hooks,opt){opt=opt||{};const bld=Builder(A
  const sPoolLo=Math.min(...S.w.classes.map(c=>S.U(c.off+0x20))),sEvLo=Math.min(S.cl0,...sEv0),poolOk=p=>p>=sPoolLo&&p<sEvLo&&sEvLo-sPoolLo<=0x10000,poolNew=grp.some(c=>poolOk(S.U(c.off+0x20)))?bld.alloc(sEvLo-sPoolLo,4):0;
  if(poolNew)bld.A.set(S.A.subarray(sPoolLo,sEvLo),poolNew);   // event-name strings (key>>16 indexes them): the new classes keep their own
  grp.forEach((c,i)=>{const o=clsNew+(ncl+i)*0x2c;for(let k=0;k<0x2c;k+=4)W(o+k,S.U(c.off+k));
-  W(o,h);bld.addRel(o);const nm=c.name,ns=bld.alloc(nm.length+2,4)+1;for(let q=0;q<nm.length;q++)bld.A[ns+q]=nm.charCodeAt(q);W(o+4,ns);bld.addRel(o+4);
+  W(o,h);bld.addRel(o);const nm=(opt.aliases&&opt.aliases[c.name])||c.name,ns=bld.alloc(nm.length+2,4)+1;for(let q=0;q<nm.length;q++)bld.A[ns+q]=nm.charCodeAt(q);W(o+4,ns);bld.addRel(o+4);
   W(o+8,mapCode(c.entry));bld.addRel(o+8);W(o+0xc,bmap.get(S.U(c.off+0xc)));bld.addRel(o+0xc);
   const sb=S.U(c.off+0x1c);W(o+0x1c,sb>=sIns?insNew:bindNew+bindOldBytes+(sb-gMin));bld.addRel(o+0x1c);
   const sp=S.U(c.off+0x20),sg=S.U(c.off+0x24);W(o+0x20,poolNew&&poolOk(sp)?poolNew+(sp-sPoolLo):poolVal);bld.addRel(o+0x20);W(o+0x24,evStart+8*(segStart.has(sg)?segStart.get(sg):segs.length));bld.addRel(o+0x24);W(o+0x28,statNew);bld.addRel(o+0x28)});
@@ -410,7 +418,7 @@ function transplantOnce(A0,B0,S,names,hooks,opt){opt=opt||{};const bld=Builder(A
  for(let i=0;i<ncl;i++){const o=clsNew+i*0x2c;if(tcls[i].bind>=ins)W(o+0x1c,bindNew+bindOldBytes);if(tcls[i].ev0>=cl0)W(o+0x24,evStart);if(tcls[i].st0===cl0)W(o+0x28,evStart)}   // ranges that ended at the class table now end where the old events end (the new classes' events must not become theirs)   // empty segments at the old end now start where the new ones begin
  // header
  W(h+0x10,codeNew);W(h+0x1c,ncode+newWords);W(h+0x14,clsNew);W(h+0x20,ncl+grp.length);W(h+0x28,insNew);W(h+0x2c,lnkNew);
- const r=bld.finish();r.classes=grp.map(c=>c.name);return r}
+ const r=bld.finish();r.classes=grp.map(c=>(opt.aliases&&opt.aliases[c.name])||c.name);r.sourceClasses=grp.map(c=>c.name);return r}
 // ---- per-level resource directory. The game does not find textures/meshes through the parts that use them: every level has a directory
 // {ntex @p-4, *texTable @p, nmesh @p+4, *meshTable @p+8} and creates the D3D textures / vertex+index buffers only for what these tables list
 // (all kind-1 textures; all kind-0x24 meshes plus the kind-0x23 vertex-buffer object). Verified equal to the real counts in every untouched level.

@@ -1,4 +1,35 @@
 // Prefab library, dependency checks, linked-child copying and cross-level moves.
+// Compare class dependency fingerprints rather than assuming that equal class names
+// mean the source and destination point at the same animation/material data. This
+// catches level-specific variants such as the hub's AnimatedCamera, whose script is
+// identical to 10-05's but whose referenced resource kinds differ.
+const classReportSignature = report => JSON.stringify({
+  bytes: report && report.bytes || 0,
+  kinds: Object.entries(report && report.kinds || {}).sort(([a], [b]) => a.localeCompare(b)),
+  strings: [...(report && report.strs || [])].sort(),
+  classes: [...(report && report.classes || [])].sort()
+});
+
+export function sourceClassVariants(sourceReports, targetReports, rootName, sourceWad, targetNames = new Set()) {
+  const suffix = String(sourceWad || 'source').replace(/\.LCS$/i, '').replace(/[^A-Za-z0-9_]+/g, '_');
+  const seen = new Set(), variants = [];
+  function visit(name) {
+    if (seen.has(name)) return;
+    seen.add(name);
+    const src = sourceReports && sourceReports[name];
+    if (!src) return;
+    const dst = targetReports && targetReports[name];
+    if (dst && classReportSignature(src) !== classReportSignature(dst)) {
+      const alias = `${name}__source_${suffix}`;
+      variants.push({ name, alias, alreadyImported: targetNames.has(alias) });
+    }
+    for (const child of src.classes || []) visit(child);
+  }
+  const root = sourceReports && sourceReports[rootName];
+  for (const child of root && root.classes || []) visit(child);
+  return variants;
+}
+
 // The coordinator injects live project/archive services and narrow entity-editor
 // callbacks so this module does not depend on coordinator lexical scope.
 export function installPrefabManager({
@@ -51,11 +82,19 @@ export function installPrefabManager({
     try {
       const SS = srcCtx(w);
       SS.wadName = w;
-      const r = EC.transplantClasses(tg.A, tg.B, SS, [name], {
+      const sourceReports = SS.rep || (SS.rep = EC.classReports(SS.A, SS.B));
+      const targetReports = EC.classReports(tg.A, tg.B);
+      const variants = sourceClassVariants(sourceReports, targetReports, name, w, new Set(tc.keys()));
+      const aliases = Object.fromEntries(variants.map(v => [v.name, v.alias]));
+      // A dependency variant already imported by an earlier prefab can be reused
+      // by resolving its source class name to the stable private alias.
+      const classHook = n => aliases[n] && tc.has(aliases[n]) ? tc.get(aliases[n]) : tc.get(n);
+      const names = [name, ...variants.filter(v => !v.alreadyImported).map(v => v.name)];
+      const r = EC.transplantClasses(tg.A, tg.B, SS, names, {
         res: EC.resResolver(SS, srcCtx(tw)).hook,
-        cls: n => tc.get(n), addRes: true, snd: sndPlan(tw)
-      });
-      return PFR[k] = { ok: true, classes: r.classes, bytes: r.A.length - tg.A.length };
+        cls: classHook, addRes: true, snd: sndPlan(tw)
+      }, { allowDup: variants.length > 0, aliases });
+      return PFR[k] = { ok: true, classes: r.classes, variants: variants.map(({name, alias}) => ({name, alias})), bytes: r.A.length - tg.A.length };
     } catch (e) {
       return PFR[k] = { ok: false, why: String(e) };
     }
@@ -69,7 +108,7 @@ export function installPrefabManager({
     if (P.classes.some(k => k.from.name === name && k.from.w === w)) return null;
     const r = tryClass(tw, w, name);
     if (!r.ok) return r.why;
-    P.classes.push({ from: { w, name } });
+    P.classes.push({ from: { w, name }, variants: r.variants || [] });
     return null;
   }
 

@@ -9,9 +9,9 @@ const bootstrap = read('js/bootstrap.js');
 const ui = read('js/editor-ui.js');
 const prefabs = read('js/prefabs.js');
 
-assert.match(html, /js\/bootstrap\.js\?v=step13-ranxblocker-fav-selection/, 'index.html requests versioned bootstrap');
-assert.match(htmlAlias, /js\/bootstrap\.js\?v=step13-ranxblocker-fav-selection/, 'consolidated HTML alias requests versioned bootstrap');
-assert.match(bootstrap, /import\(\'\.\/editor-ui\.js\?v=step13-ranxblocker-fav-selection\'\)/, 'bootstrap imports a versioned coordinator');
+assert.match(html, /js\/bootstrap\.js\?v=step14-camera-source-variants/, 'index.html requests versioned bootstrap');
+assert.match(htmlAlias, /js\/bootstrap\.js\?v=step14-camera-source-variants/, 'consolidated HTML alias requests versioned bootstrap');
+assert.match(bootstrap, /import\(\'\.\/editor-ui\.js\?v=step14-camera-source-variants\'\)/, 'bootstrap imports a versioned coordinator');
 assert.match(ui, /const\s+getWad\s*=\s*w\s*=>/, 'coordinator defines getWad');
 assert.match(ui, /installModelEditor\(\{[\s\S]{0,400}getWad/, 'getWad is injected into Models');
 assert.match(ui, /installScriptEditor\(\{[\s\S]{0,400}getWad/, 'getWad is injected into Scripts');
@@ -23,9 +23,9 @@ assert.match(ui, /installModelEditor\(\{[\s\S]{0,400}summary/, 'summary is injec
 assert.match(ui, /installEntityEditor\(\{[\s\S]{0,400}summary,\s*rmList/, 'summary and rmList are injected into Entity Editor');
 console.log('Deployment cache smoke test passed.');
 
-assert.match(ui, /import \{ installPrefabManager \} from '\.\/prefabs\.js\?v=step13-ranxblocker-fav-selection'/, 'coordinator imports the prefab module');
+assert.match(ui, /import \{ installPrefabManager \} from '\.\/prefabs\.js\?v=step14-camera-source-variants'/, 'coordinator imports the prefab module');
 assert.match(ui, /installPrefabManager\(\{[\s\S]{0,500}getWad/, 'coordinator injects archive lookup into Prefabs');
 assert.match(prefabs, /export function installPrefabManager/, 'prefab installer is an exported ES-module API');
 console.log('Prefab-module deployment smoke test passed.');
 
-assert.match(ui, /import \{ installProjectManager \} from '\.\/project-manager\.js\?v=step13-ranxblocker-fav-selection'/, 'coordinator imports the updated project manager with a cache key');
+assert.match(ui, /import \{ installProjectManager \} from '\.\/project-manager\.js\?v=step14-camera-source-variants'/, 'coordinator imports the updated project manager with a cache key');
