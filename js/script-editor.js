@@ -2,7 +2,7 @@
 // them during patched VOL construction through the controller's fingerprint callback.
 import { siWad } from './vol-core.js';
 
-export function installScriptEditor({Viewer, IA, EC, getWad, volOf, getVolName, getProject}) {
+export function installScriptEditor({Viewer, IA, EC, getWad, wadOf, isVol, volOf, getVolName, getProject}) {
 // ---- assembly editor (Scripts tab). Edits the code block that holds the selected class; saved in the project (scripts) and applied by "Build patched .vol"
 const ASMC={},ASMBUF={};let asmOpen=false,asmW='',asmBusy=false;
 const ahex=p=>'0x'+p.toString(16);

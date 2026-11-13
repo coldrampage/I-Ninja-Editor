@@ -202,7 +202,7 @@ Viewer.$('ed_stb').onclick=async()=>{try{if(!isVol())throw'load a .vol first';co
   Viewer.$('ed_sum').textContent='copier self-test ('+loadedVols().join(', ')+'): '+r.copied+' of '+r.pairs+' class pairs copied between levels; copy identical to its source '+r.copyEqualsSource+'/'+r.copied+'; same structure as the target level\'s own copy '+r.copyStructEqualsTarget+'/'+r.copied+'; patched wad well-formed '+r.valid+'/'+r.copied+'. Levels whose data differ cannot be paired: '+(r.pairs-r.copied)+'.';
   let rp=Viewer.$('ed_rep');if(!rp){showRep();rp=Viewer.$('ed_rep')}rp.textContent=Object.entries(r.errors).map(([k,n])=>n+' x '+k).concat(r.bad).join('\n');rp.style.whiteSpace='pre-wrap'}catch(x){Viewer.$('ed_sum').textContent='self-test failed: '+x;console.error(x)}};
 // The Scripts-tab assembly editor owns code-edit UI and project fingerprint generation.
-buildScriptWadsFp=installScriptEditor({Viewer,IA,EC,getWad,volOf,getVolName:()=>volName,getProject:()=>PRJ}).scriptWadsFp;
+buildScriptWadsFp=installScriptEditor({Viewer,IA,EC,getWad,wadOf,isVol,volOf,getVolName:()=>volName,getProject:()=>PRJ}).scriptWadsFp;
 
 // ---- copying objects: linked children (deep copy), moving an added object to another level, script info for added objects
 const LKC={};
