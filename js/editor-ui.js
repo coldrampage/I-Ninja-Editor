@@ -3,14 +3,14 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js?v=step21-sneaksentinel-runtime-companions';
+import { EC } from './editor-core.js?v=step22-logturret-name-lookup';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step21-sneaksentinel-runtime-companions';
-import { installModelEditor } from './models-panel.js?v=step21-sneaksentinel-runtime-companions';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step22-logturret-name-lookup';
+import { installModelEditor } from './models-panel.js?v=step22-logturret-name-lookup';
 import { installScriptEditor } from './script-editor.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step21-sneaksentinel-runtime-companions';
-import { installPrefabManager } from './prefabs.js?v=step21-sneaksentinel-runtime-companions';
+import { installEntityEditor } from './entity-editor.js?v=step22-logturret-name-lookup';
+import { installPrefabManager } from './prefabs.js?v=step22-logturret-name-lookup';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.

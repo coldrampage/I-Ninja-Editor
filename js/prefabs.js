@@ -1,8 +1,10 @@
+import { analyseStrats, siWad } from './vol-core.js';
+
 // Prefab library, dependency checks, linked-child copying and cross-level moves.
-// Compare class dependency fingerprints rather than assuming that equal class names
-// mean the source and destination point at the same animation/material data. This
-// catches level-specific variants such as the hub's AnimatedCamera, whose script is
-// identical to 10-05's but whose referenced resource kinds differ.
+// Compare class dependency fingerprints and shared code-block membership rather
+// than assuming that equal class names mean source/destination assets are identical.
+// When one class in a shared block differs, every colliding sibling in that block
+// must receive a private alias because the class copier imports the whole block.
 const classReportSignature = report => JSON.stringify({
   bytes: report && report.bytes || 0,
   kinds: Object.entries(report && report.kinds || {}).sort(([a], [b]) => a.localeCompare(b)),
@@ -10,24 +12,105 @@ const classReportSignature = report => JSON.stringify({
   classes: [...(report && report.classes || [])].sort()
 });
 
-export function sourceClassVariants(sourceReports, targetReports, rootName, sourceWad, targetNames = new Set()) {
+export function sourceClassVariants(sourceReports, targetReports, rootName, sourceWad, targetNames = new Set(), sourceWadInfo = null) {
   const suffix = String(sourceWad || 'source').replace(/\.LCS$/i, '').replace(/[^A-Za-z0-9_]+/g, '_');
-  const seen = new Set(), variants = [];
+  const seen = new Set(), variants = new Map();
+  const classByName = new Map((sourceWadInfo && sourceWadInfo.classes || []).map(c => [c.name, c]));
+  const blockMembers = new Map();
+  if (sourceWadInfo) for (const c of sourceWadInfo.classes || []) {
+    const block = sourceWadInfo.U(c.off + 0x0c);
+    if (!blockMembers.has(block)) blockMembers.set(block, []);
+    blockMembers.get(block).push(c);
+  }
+  const addAlias = (name, force = false) => {
+    if ((!force && !targetNames.has(name)) || variants.has(name)) return;
+    const alias = `${name}__source_${suffix}`;
+    variants.set(name, { name, alias, alreadyImported: targetNames.has(alias) });
+  };
   function visit(name) {
     if (seen.has(name)) return;
     seen.add(name);
     const src = sourceReports && sourceReports[name];
     if (!src) return;
-    const dst = targetReports && targetReports[name];
-    if (dst && classReportSignature(src) !== classReportSignature(dst)) {
-      const alias = `${name}__source_${suffix}`;
-      variants.push({ name, alias, alreadyImported: targetNames.has(alias) });
+
+    const sourceClass = classByName.get(name);
+    const members = sourceClass && sourceWadInfo
+      ? (blockMembers.get(sourceWadInfo.U(sourceClass.off + 0x0c)) || [sourceClass])
+      : [sourceClass].filter(Boolean);
+    // groupOf() copies every class sharing a code block. If any member of that
+    // block is missing or differs in the destination, the whole block must be
+    // imported. Alias every colliding sibling, even if that sibling's own
+    // report fingerprint happens to match: otherwise a harmless sibling such
+    // as Splash can abort the transplant when a different sibling varies.
+    const blockNeedsCopy = sourceClass && sourceWadInfo && members.some(member => {
+      if (!targetNames.has(member.name)) return true;
+      const sourceMember = sourceReports && sourceReports[member.name];
+      const targetMember = targetReports && targetReports[member.name];
+      return !sourceMember || !targetMember
+        || classReportSignature(sourceMember) !== classReportSignature(targetMember);
+    });
+
+    if (blockNeedsCopy) {
+      for (const member of members) {
+        addAlias(member.name);
+        const memberReport = sourceReports && sourceReports[member.name];
+        for (const child of memberReport && memberReport.classes || []) visit(child);
+      }
+    } else if (!sourceClass) {
+      // Compatibility path for callers without a parsed source class table.
+      const dst = targetReports && targetReports[name];
+      if (dst && classReportSignature(src) !== classReportSignature(dst)) addAlias(name, true);
     }
+
+    const dst = targetReports && targetReports[name];
+    if (!sourceClass && dst && classReportSignature(src) !== classReportSignature(dst)) addAlias(name);
     for (const child of src.classes || []) visit(child);
   }
   const root = sourceReports && sourceReports[rootName];
   for (const child of root && root.classes || []) visit(child);
-  return variants;
+  return [...variants.values()];
+}
+
+function classNameLookupIndex(source) {
+  if (!source || source.lookupNames) return source && source.lookupNames || {};
+  if (!source.A || !source.B) return {};
+  const wad = source.w || siWad(source.A, source.B);
+  if (!wad) return {};
+  const summaries = {}, parsed = analyseStrats(source.A, source.B, summaries), out = {};
+  const fallbackOwners = new Set();
+  const namesFromScript = (ci, className) => {
+    const lines = [];
+    for (const h of ci && ci.handlers || []) for (const line of h.t || []) lines.push(line);
+    for (const sub of ci && ci.subs || []) for (const line of sub.t || []) lines.push(line);
+    const found = new Set();
+    for (const line of lines) {
+      // A disassembly text block can contain an entire handler, not one
+      // instruction per array entry. Scan every name-lookup/broadcast call in
+      // the block: taking only String.match()'s first result misses later
+      // calls such as LogTurretCutscene's FindByName after its camera broadcast.
+      const calls = line.matchAll(/\bStrat_(FindByName(?:InRadius)?|BroadcastName)\s*\(([^)]*)\)/g);
+      for (const call of calls) {
+        const literals = [...call[2].matchAll(/"([^"]+)"/g)];
+        if (literals.length) for (const match of literals) found.add(match[1]);
+        // Some builds pass the lookup name through a temporary/string register,
+        // so the disassembler prints `Strat_FindByName(?)` even though the class
+        // report still resolves the backing string pointer. Only use that broad
+        // per-class string fallback when an actual name-lookup native has an
+        // unresolved argument; never use strings from ordinary Strat_IsClass,
+        // debug, logging, or unrelated calls as companion candidates.
+        else fallbackOwners.add(className);
+      }
+    }
+    return [...found];
+  };
+  (wad.classes || []).forEach((c, i) => {
+    const ci = parsed && parsed.keys && summaries[parsed.keys[i]];
+    out[c.name] = namesFromScript(ci, c.name);
+  });
+  source.w = wad;
+  source.lookupNames = out;
+  source.lookupFallback = [...fallbackOwners];
+  return out;
 }
 
 // Some I-Ninja scripts find companion strats by their literal class name
@@ -41,21 +124,39 @@ export function discoverNamedCompanionInstances(source, rootClassName, options =
   const excluded = new Set([rootClassName, ...(options.excludeClasses || [])]);
   const seenClasses = new Set(excluded), seenInstances = new Set(), out = [];
   const canCopy = typeof options.canCopy === 'function' ? options.canCopy : () => true;
+  const lookupNames = classNameLookupIndex(source);
   const queue = [rootClassName];
   while (queue.length) {
     const owner = queue.shift();
     const report = source.rep[owner];
-    for (const candidate of report && report.strs || []) {
+    if (!report) continue;
+    // Follow the class dependency graph as well as direct name lookups. A
+    // wall's script references LogTurretCutscene, and that helper—not the wall
+    // itself—performs Strat_FindByNameInRadius("LogTurret") after the break.
+    for (const dependency of report.classes || []) {
+      if (!source.cls.has(dependency) || seenClasses.has(dependency)) continue;
+      seenClasses.add(dependency);
+      queue.push(dependency);
+    }
+    // Only names passed to actual name-lookup/broadcast natives are companions.
+    // Other script strings (for example Strat_IsClass tests) are not enough.
+    const lookupCandidates = new Set(lookupNames[owner] || []);
+    if ((source.lookupFallback || []).includes(owner)) {
+      for (const candidate of report.strs || []) lookupCandidates.add(candidate);
+    }
+    for (const candidate of lookupCandidates) {
       if (!source.cls.has(candidate) || seenClasses.has(candidate)) continue;
       seenClasses.add(candidate);
-      const matches = source.ents.filter(e => e && e.n === candidate && Number.isInteger(e.i) && canCopy(e));
-      if (!matches.length) continue;
+      const matches = source.ents.filter(e => e && e.n === candidate
+        && Number.isInteger(e.i) && canCopy(e));
       for (const e of matches) {
         const key = String(e.i);
         if (seenInstances.has(key)) continue;
         seenInstances.add(key);
         out.push({ name: candidate, i: e.i, via: owner });
       }
+      // A looked-up class may itself perform further name lookups, even when
+      // its instance is spawned dynamically and is not statically present.
       queue.push(candidate);
     }
   }
@@ -103,9 +204,10 @@ export function installPrefabManager({
       try { rep = EC.classReports(A, B); }
       catch (e) { console.error('class report failed for', w, e); }
     }
+    const wad = siWad(A, B);
     return SP[w] = {
-      A, B, ents, pick, first, rep,
-      cls: new Set(siWad(A, B).classes.map(c => c.name))
+      A, B, ents, pick, first, rep, w: wad,
+      cls: new Set(wad.classes.map(c => c.name))
     };
   }
 
@@ -133,7 +235,7 @@ export function installPrefabManager({
       SS.wadName = w;
       const sourceReports = SS.rep || (SS.rep = EC.classReports(SS.A, SS.B));
       const targetReports = EC.classReports(tg.A, tg.B);
-      const variants = sourceClassVariants(sourceReports, targetReports, name, w, new Set(tc.keys()));
+      const variants = sourceClassVariants(sourceReports, targetReports, name, w, new Set(tc.keys()), siWad(SS.A, SS.B));
       const aliases = Object.fromEntries(variants.map(v => [v.name, v.alias]));
       // A dependency variant already imported by an earlier prefab can be reused
       // by resolving its source class name to the stable private alias.
@@ -866,7 +968,31 @@ export function installPrefabManager({
       if (!src || !source) return;
       const existingProjectCopy = (P.adds || []).some(a => a.from && a.from.w === node.from.w
         && Number(a.from.i) === Number(node.from.i));
-      if (existingProjectCopy) { skipNamed.add(index); return; }
+      if (src.n === 'LogTurret') {
+        const expected = at.map((v, k) => v + (node.offset[k] || 0));
+        const existing = [];
+        const project = getProject(), targetProject = (project.wads || {})[tw] || {};
+        const targetMods = targetProject.mods || {};
+        const deleted = new Set((targetProject.del || []).map(Number));
+        if (target) for (const e of target.ents || []) {
+          if (e.n !== 'LogTurret' || deleted.has(e.i)) continue;
+          const delta = targetMods[e.i] && targetMods[e.i].d || [0, 0, 0];
+          existing.push({ p: e.p.map((v, k) => v + (Number(delta[k]) || 0)), label: tw + ' #' + e.i });
+        }
+        for (const a of targetProject.adds || []) {
+          if (!a || !a.from || typeof a.from.w !== 'string') continue;
+          const targetSource = srcEnt(a);
+          if (targetSource && targetSource.n === 'LogTurret') existing.push({ p: a.p.slice(), label: tw + ' added #' + (a.id ?? '?') });
+        }
+        if (existing.length > 1) {
+          throw 'the LogTurret cutscene uses a level-wide camera broadcast and name lookup; only one LogTurret sequence can exist in a level. Remove duplicate LogTurret instances first';
+        }
+        if (existing.length === 1) {
+          const d2 = existing[0].p.reduce((sum, v, k) => sum + (v - expected[k]) ** 2, 0);
+          if (d2 <= 2.5 ** 2) { skipNamed.add(index); return; }
+          throw "a LogTurret already exists at " + existing[0].label + ", but it is not at this wall prefab's required second waypoint. Move or remove it before placing this LogTurretWall sequence";
+        }
+      } else if (existingProjectCopy) { skipNamed.add(index); return; }
       if (!target || !target.cls.has(src.n)) return;
       const srcSig = classReportSignature(source.rep && source.rep[src.n]);
       const dstSig = classReportSignature(target.rep && target.rep[src.n]);
@@ -875,6 +1001,33 @@ export function installPrefabManager({
       }
       if (target.ents.some(e => e.n === src.n && !deletedTargetInstances.has(e.i))) skipNamed.add(index);
     });
+
+    // LogTurretWall's break cutscene broadcasts to every LogTurretCamera and
+    // later finds a LogTurret by name near its second waypoint. These scripts
+    // are designed around one paired sequence per level; duplicates can steal
+    // the camera or leave the cutscene waiting forever. Refuse unsafe duplicate
+    // placement instead of creating a known softlock.
+    const singletonNames = new Set(['LogTurret', 'LogTurretWall']);
+    const targetProject = (getProject().wads || {})[tw] || {};
+    const targetMods = targetProject.mods || {}, deleted = new Set((targetProject.del || []).map(Number));
+    const counts = new Map();
+    for (const name of singletonNames) counts.set(name, 0);
+    if (target) for (const e of target.ents || []) {
+      if (singletonNames.has(e.n) && !deleted.has(e.i)) counts.set(e.n, counts.get(e.n) + 1);
+    }
+    for (const a of targetProject.adds || []) {
+      if (!a || !a.from || typeof a.from.w !== 'string') continue;
+      const e = srcEnt(a);
+      if (e && singletonNames.has(e.n)) counts.set(e.n, counts.get(e.n) + 1);
+    }
+    nodes.forEach((node, index) => {
+      if (skipNamed.has(index)) return;
+      const e = srcEnt({ from: node.from });
+      if (e && singletonNames.has(e.n)) counts.set(e.n, counts.get(e.n) + 1);
+    });
+    for (const name of singletonNames) if (counts.get(name) > 1) {
+      throw 'LogTurret and LogTurretWall use a shared, level-wide camera/cutscene sequence. Only one of each can safely exist in a level; remove the existing duplicate before placing another';
+    }
 
     // Validate all source classes and dependencies before adding any prefab
     // instances. Roll back dependency entries if a later child is not copyable.
