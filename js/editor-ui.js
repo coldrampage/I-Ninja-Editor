@@ -8,6 +8,7 @@ import { IA } from './strat-assembler.js';
 import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step22-logturret-name-lookup';
 import { installModelEditor } from './models-panel.js?v=step22-logturret-name-lookup';
 import { installScriptEditor } from './script-editor.js';
+import { installTexturePanel } from './textures-panel.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
 import { installEntityEditor } from './entity-editor.js?v=step22-logturret-name-lookup';
 import { installPrefabManager } from './prefabs.js?v=step22-logturret-name-lookup';
@@ -25,7 +26,7 @@ let resetModelCaches=()=>{},buildScriptWadsFp=()=>({}),edUpdate=()=>{},rec=()=>n
 // owns the live inspector contents, while this coordinator owns the shared
 // project/prefab controls; prefabs.js attaches its own handlers after insertion.
 const ui=document.createElement('div');ui.id='ed';
-ui.innerHTML='<hr><b>Editor</b> <span class=h>edits go in a project file; game files are never touched</span><details style="margin:3px 0"><summary class=h>current scope</summary><div class=h><b>Rotation:</b> yaw, pitch and roll are editable. Yaw turns about world up; pitch (local X) and roll (local Z) are applied on top of the original orientation and shown as changes from it.<br><b>No LCM edits:</b> only .LCS strat data can be edited. The project format is per-wad, so LCM edits can slot in later.</div></details><div style="margin:3px 0"><button id=ed_open>open project</button> <button id=ed_save>save project</button> <button id=ed_patch>build patched .vol</button> <button id=ed_md>models</button> <button id=ed_stb>copier self-test</button></div><input type=file id=ed_pf style=display:none accept=.json><div id=ed_sum class=h></div><div id=ed_rm class=h></div><div id=ed_sel class=h>click an entity to edit it</div>'
+ui.innerHTML='<hr><b>Editor</b> <span class=h>edits go in a project file; game files are never touched</span><details style="margin:3px 0"><summary class=h>current scope</summary><div class=h><b>Rotation:</b> yaw, pitch and roll are editable. Yaw turns about world up; pitch (local X) and roll (local Z) are applied on top of the original orientation and shown as changes from it.<br><b>No LCM edits:</b> only .LCS strat data can be edited. The project format is per-wad, so LCM edits can slot in later.</div></details><div style="margin:3px 0"><button id=ed_open>open project</button> <button id=ed_save>save project</button> <button id=ed_patch>build patched .vol</button> <button id=ed_md>models</button> <button id=ed_tx>textures</button> <button id=ed_stb>copier self-test</button></div><input type=file id=ed_pf style=display:none accept=.json><div id=ed_sum class=h></div><div id=ed_rm class=h></div><div id=ed_sel class=h>click an entity to edit it</div>'
   +'<div style="margin-top:4px"><span class=h>add prefab to</span> <select id=ed_lv style="max-width:90px"></select> <select id=ed_cl style="max-width:170px"></select> <button id=ed_add>add</button><br><label class=h title="A spawner links to the objects it spawns. Tick this to copy those objects too, as separate objects that link to each other, so the copy spawns its own set."><input type=checkbox id=ed_deep> also copy the objects it links to</label></div>'
   +'<details id=ed_fav_panel style="margin-top:5px"><summary class=h>Prefab favourites <span id=ed_fav_count>(0)</span></summary>'
   +'<div class=h>Project-wide library. Source .vol/.avl archives are accessed on demand from the game folder.</div>'
@@ -250,6 +251,7 @@ Viewer.$('ed_stb').onclick=async()=>{try{if(!isVol())throw'load a .vol first';co
 buildScriptWadsFp=installScriptEditor({Viewer,IA,EC,getWad,wadOf,isVol,volOf,getVolName:()=>volName,getProject:()=>PRJ}).scriptWadsFp;
 
 // Project open/save and VOL/AVL patching are handled by their own module.
+installTexturePanel({Viewer,getProject:()=>PRJ,getWad,onChange:()=>{}});
 const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setProject:j=>{PRJ=j},isVol,getWad,volOf,getVolName:()=>volName,loadedVols,buildScriptWadsFp,sndPlan,avlLoad,avlOk,vbase,getAvl:v=>AVLS[vbase(v)],sourceClass:prefabManager.sourceClass,unzero,onProjectLoaded:()=>prefabManager.renderFavorites(false)});
 
 const entityEditor=installEntityEditor({
