@@ -62,7 +62,7 @@ function buildLevel(L,lv){const g=new THREE.Group(),G=lv.geo;
    if(t){if(!T[gr.tex]){const x=new THREE.DataTexture(t.rgba,t.w,t.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;
      x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;T[gr.tex]=x}map=T[gr.tex];alpha=t.alpha}
    const m=new THREE.MeshBasicMaterial({map,vertexColors:true,side:THREE.DoubleSide,alphaTest:alpha?.5:0,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
-   m.userData={map};mats.push(m);const mesh=new THREE.Mesh(geo,m);mesh.userData.kind='geo';g.add(mesh)}}}
+   m.userData={map,texOff:gr.tex,lv:L};mats.push(m);const mesh=new THREE.Mesh(geo,m);mesh.userData.kind='geo';g.add(mesh)}}}
  if(lv.coll&&lv.coll.mat.length){const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(lv.coll.pos,3));
   geo.setAttribute('color',new THREE.BufferAttribute(collColors(lv.coll),3));
   if(!collMat)collMat=new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide});
@@ -311,7 +311,15 @@ rs();camera.position.set(0,50,100);setCam();requestAnimationFrame(tick);
 
 // Explicit viewer API for sibling ES modules. Accessors preserve live state and
 // controlled function overrides without publishing properties on the browser global.
+// swap one texture of an already-built level in place (no reload): used by the Textures panel
+function retexture(id,off,img){const lv=D.find(x=>x.id===id);if(lv&&lv.geo&&lv.geo.texs)lv.geo.texs[off]=img;
+  for(const m of mats){if(m.userData.lv!==id||m.userData.texOff!==off)continue;
+    if(!img){m.map=null;m.alphaTest=0}else{const x=new THREE.DataTexture(img.rgba,img.w,img.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;
+      if(m.map)m.map.dispose();m.map=x;m.userData.map=x;m.alphaTest=img.alpha?.5:0}
+    m.needsUpdate=true}
+  need=true}
 const viewerApiBindings = {
+  get retexture() { return retexture; },
   get $() { return $; },
   get D() { return D; }, set D(value) { D = value; },
   get SCR() { return SCR; }, set SCR(value) { SCR = value; },

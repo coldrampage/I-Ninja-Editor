@@ -3,15 +3,15 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js?v=step22-logturret-name-lookup';
+import { EC } from './editor-core.js?v=step23-texture-live';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step22-logturret-name-lookup';
-import { installModelEditor } from './models-panel.js?v=step22-logturret-name-lookup';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step23-texture-live';
+import { installModelEditor } from './models-panel.js?v=step23-texture-live';
 import { installScriptEditor } from './script-editor.js';
 import { installTexturePanel } from './textures-panel.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step22-logturret-name-lookup';
-import { installPrefabManager } from './prefabs.js?v=step22-logturret-name-lookup';
+import { installEntityEditor } from './entity-editor.js?v=step23-texture-live';
+import { installPrefabManager } from './prefabs.js?v=step23-texture-live';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -46,7 +46,7 @@ const r3=x=>Math.round(x*1000)/1000,wadOf=L=>Viewer.levels[L]&&Viewer.levels[L].
 const isVol=()=>Viewer.files.some(f=>f.vol&&f.buf&&f.buf.byteLength>16&&new DataView(f.buf).getUint32(0,true)===0x544c4f56);
 // Cached parsed LCS access used by prefab/resource checks, model overlays, script editing,
 // entity editing and project export. This was accidentally dropped during the Step 9 split.
-const getWad=w=>{if(WC[w])return WC[w];const f=Viewer.files.find(x=>x.name===w);if(!f)return null;const[A,B]=readWad(f.buf,f);return WC[w]={A,B,cls:new Set(siWad(A,B).classes.map(c=>c.name))}};
+const getWad=w=>{if(WC[w])return WC[w];const f=Viewer.files.find(x=>x.name===w);if(!f)return null;const[A,B]=readWad(f.buf,f);return WC[w]={A,B,cls:new Set(((siWad(A,B)||{}).classes||[]).map(c=>c.name))}};
 const vbase=n=>String(n||'').replace(/\.(vol|avl)$/i,'').toLowerCase(),volOf=w=>{const f=Viewer.files.find(x=>x.name===w);return f&&f.vol},loadedVols=()=>[...new Set(Viewer.files.filter(f=>f.vol).map(f=>f.vol))];
 const avlOk=v=>!!v&&!!AVLS[vbase(v)];
 // The browser will not reveal the parent directory of a File selected with the
@@ -251,8 +251,8 @@ Viewer.$('ed_stb').onclick=async()=>{try{if(!isVol())throw'load a .vol first';co
 buildScriptWadsFp=installScriptEditor({Viewer,IA,EC,getWad,wadOf,isVol,volOf,getVolName:()=>volName,getProject:()=>PRJ}).scriptWadsFp;
 
 // Project open/save and VOL/AVL patching are handled by their own module.
-installTexturePanel({Viewer,getProject:()=>PRJ,getWad,onChange:()=>{}});
-const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setProject:j=>{PRJ=j},isVol,getWad,volOf,getVolName:()=>volName,loadedVols,buildScriptWadsFp,sndPlan,avlLoad,avlOk,vbase,getAvl:v=>AVLS[vbase(v)],sourceClass:prefabManager.sourceClass,unzero,onProjectLoaded:()=>prefabManager.renderFavorites(false)});
+const texturePanel=installTexturePanel({Viewer,getProject:()=>PRJ,getWad,onChange:()=>{resetModelCaches();try{Viewer.refresh()}catch(e){console.error(e)}}});
+const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setProject:j=>{PRJ=j},isVol,getWad,volOf,getVolName:()=>volName,loadedVols,buildScriptWadsFp,sndPlan,avlLoad,avlOk,vbase,getAvl:v=>AVLS[vbase(v)],sourceClass:prefabManager.sourceClass,unzero,onProjectLoaded:()=>{prefabManager.renderFavorites(false);texturePanel.syncAll()}});
 
 const entityEditor=installEntityEditor({
   Viewer,EC,getProject:()=>PRJ,wadOf,getWad,WS,base,put,unzero,srcEnt,

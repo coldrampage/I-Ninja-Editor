@@ -1,7 +1,7 @@
 // Textures panel: browse a level wad's textures, export one as PNG, replace it with your own image, or add a brand-new texture.
 // Edits are stored in the project as base64 TGA (your pixels only) under project.textures[wad].ops and applied by "build patched .vol".
 import { listTextures, encodeTga, isPow2 } from './texture-tools.js';
-import { parseTga } from './vol-core.js';
+import { parseTga, setTexOverride, clearTexOverrides } from './vol-core.js';
 
 export function installTexturePanel({ Viewer, getProject, getWad, onChange = () => {} }) {
   const $ = id => document.getElementById(id);
@@ -20,6 +20,7 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
   document.body.appendChild(panel);
 
   let list = [], cur = null, mode = null; // mode: 'replace' | 'add'
+  const shown = new Map(); // wad -> Set(texture offsets currently previewed from the project)
 
   const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
   const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
@@ -30,6 +31,16 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
   function decodeStored(t) { // a stored TGA op -> {w,h,rgba} via the wad parser (it falls back to obj+0x20 for the pixel data)
     const A = new Uint8Array(0x20 + t.length); A.set(t, 0x20); return parseTga(A, 0);
   }
+
+  // Make the editor show the project's replacements without reloading: register them as parse overrides, then swap the live level textures.
+  function sync(w) {
+    const g = getWad(w), id = w.replace(/\.\w+$/, ''), reps = ops(w).filter(x => x.op === 'replace'), prev = shown.get(w) || new Set(), now = new Set();
+    clearTexOverrides(w);
+    for (const x of reps) { try { const img = decodeStored(unb64(x.tga)); if (img) { setTexOverride(w, x.tex, img); now.add(x.tex); if (/\.LCM$/i.test(w) && Viewer.retexture) Viewer.retexture(id, x.tex, img); } } catch (e) { console.error('texture preview', e); } }
+    for (const off of prev) if (!now.has(off) && g && /\.LCM$/i.test(w) && Viewer.retexture) Viewer.retexture(id, off, parseTga(g.A, off)); // reverted: put the original back
+    shown.set(w, now);
+  }
+  function syncAll() { const T = getProject().textures || {}; for (const w of Object.keys(T)) { try { sync(w); } catch (e) { console.error(e); } } }
 
   function thumb(img, size) {
     const c = document.createElement('canvas'); c.width = img.w; c.height = img.h;
@@ -59,8 +70,7 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
     list = listTextures(g.A, g.B);
     const rep = new Map(ops(w).filter(x => x.op === 'replace').map(x => [x.tex, x]));
     for (const t of list) {
-      let img = t.img; const r = rep.get(t.off);
-      if (r) { try { img = decodeStored(unb64(r.tga)) || img; } catch (e) {} }
+      const img = t.img, r = rep.get(t.off); // t.img already shows the project's replacement (parse override)
       if (!img) continue;
       const c = thumb(img, 64); c.title = '@0x' + t.off.toString(16) + ' ' + t.w + 'x' + t.h; c.style.cursor = 'pointer'; c.style.border = r ? '1px solid #fc6' : '1px solid #333';
       c.onclick = () => select(t, c); $('tx_grid').appendChild(c);
@@ -87,7 +97,7 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
   $('tx_rep').onclick = () => { mode = 'replace'; $('tx_file').click(); };
   $('tx_add').onclick = () => { mode = 'add'; $('tx_file').click(); };
   $('tx_undo').onclick = () => {
-    const T = store(wad()); T.ops = T.ops.filter(x => !(x.op === 'replace' && x.tex === cur.off)); onChange(); fill();
+    const T = store(wad()); T.ops = T.ops.filter(x => !(x.op === 'replace' && x.tex === cur.off)); sync(wad()); onChange(); fill();
   };
   $('tx_file').onchange = async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
@@ -99,7 +109,7 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
       const T = store(w);
       if (mode === 'replace') { T.ops = T.ops.filter(x => !(x.op === 'replace' && x.tex === o.off)); T.ops.push({ op: 'replace', tex: o.off, tga: b64(tga) }); }
       else { const id = (f.name || 'texture').replace(/\.\w+$/, '').slice(0, 40); T.ops.push({ op: 'add', id, tga: b64(tga), assign: [] }); }
-      onChange(); fill();
+      sync(w); onChange(); fill();
       $('tx_sel').textContent = (mode === 'replace' ? 'replaced' : 'added') + ' from ' + f.name + ' (' + im.from + ' → ' + im.w + 'x' + im.h + ', ' + tga.length + ' bytes). Build the patched .vol to apply it.';
     } catch (x) { $('tx_sel').textContent = 'texture edit failed: ' + x; }
   };
@@ -111,5 +121,5 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
     const keep = wad(); $('tx_w').innerHTML = names.map(n => '<option>' + n + '</option>').join('');
     if (names.includes(keep)) $('tx_w').value = keep; fill();
   };
-  return { fill };
+  return { fill, sync, syncAll };
 }

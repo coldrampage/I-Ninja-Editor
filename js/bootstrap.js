@@ -1,6 +1,6 @@
 // ES-module bootstrap. All application modules import their dependencies directly.
 try {
-  await import('./editor-ui.js?v=step22-logturret-name-lookup');
+  await import('./editor-ui.js?v=step23-texture-live');
   document.documentElement.dataset.editorReady = 'true';
   console.info('I-Ninja Editor v18: ES-module application loaded.');
 } catch (error) {

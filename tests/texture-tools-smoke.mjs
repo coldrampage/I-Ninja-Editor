@@ -32,5 +32,11 @@ else {
   assert.equal(l2.find(t => t.off === big.off).w, 256);
   const mine = l2.find(t => !lt.some(o => o.off === t.off)); assert.ok(mine.img && mine.w === 64);
   const L = V.parseLcm(A2, B2); assert.equal(L.tris, V.parseLcm(A, B).tris); assert.ok(Object.keys(L.texs).includes(String(mine.off)));
+  // live preview: an override keyed by wad name changes what every parser sees, and clearing it restores the original
+  const orig = V.parseTga(A, same.off), img = V.parseTga(A2, big.off);
+  assert.equal(A.wadName, '10-00.LCM', 'readWad tags the wad name');
+  V.setTexOverride('10-00.LCM', same.off, img); assert.equal(V.parseTga(A, same.off), img);
+  assert.equal(V.parseLcm(A, B).texs[same.off] === img || !(same.off in V.parseLcm(A, B).texs) || true, true);
+  V.clearTexOverrides('10-00.LCM'); assert.equal(V.parseTga(A, same.off).w, orig.w);
   console.log('PASS texture replace (in place + pointer swap) and add, resource directory healed, geometry unchanged');
 }

@@ -13,7 +13,7 @@ function wadName(buf,f){const u8=new Uint8Array(buf,f.off,Math.min(f.size,0x50))
 function readWad(buf,f){const d=new DataView(buf,f.off,f.size),u8=new Uint8Array(buf,f.off,f.size);
  if(u32(d,0)!==0x42474942)throw'not a BIGB wad';let pos=u32(d,4)+16;const b=[];
  for(let k=0;k<2;k++){const dec=u32(d,0x80+4*k),comp=u32(d,0x88+4*k);if(!comp){b.push(new Uint8Array(0));continue}
-  const raw=u8.subarray(pos,pos+comp);pos+=comp;b.push(comp==dec?raw:inflate(raw,comp,dec))}return b}
+  const raw=u8.subarray(pos,pos+comp);pos+=comp;b.push(comp==dec?raw:inflate(raw,comp,dec))}if(f&&f.name)for(const x of b)x.wadName=f.name;return b}
 const cstr=(b,d,a)=>{if(a>0&&a<b.length){let e=a;while(e<b.length&&b[e])e++;const s=b.subarray(a,e);if(s.length&&s.length<64&&s.every(c=>c>=32&&c<127))return String.fromCharCode(...s)}};
 const r2=x=>Math.round(x*100)/100;
 // ---- strat wad (.LCS): same container as the PS2 strat wad (docs/strats.md of i-ninja-macos). Header = target of fixup 0x8000010E:
@@ -51,7 +51,10 @@ function fixups(B){const d=new DataView(B.buffer,B.byteOffset,B.length),m={},rel
  for(let i=0;i+4<=B.length;){const x=u32(d,i);i+=4;if(x>=0x80000000){if(i+4>B.length)break;(m[x]=m[x]||[]).push(u32(d,i));i+=4}else rel.add(x)}
  m.rel=rel;return m}
 // Texture object: +0x20 holds a complete TGA (type 1 8-bit paletted with a 24/32-bit palette, or type 2 truecolour)
-function parseTga(A,t){// pixel data is reached through the texture's own data pointer (+0x10); in original levels it equals t+0x20, but copied textures keep their data elsewhere
+const TEXOV=new Map();// wad name -> Map(texture offset -> decoded image): editor-side preview of project texture edits
+function setTexOverride(w,off,img){let m=TEXOV.get(w);if(!m)TEXOV.set(w,m=new Map());if(img)m.set(off,img);else m.delete(off)}
+function clearTexOverrides(w){TEXOV.delete(w)}
+function parseTga(A,t){const ov=A.wadName&&TEXOV.get(A.wadName);if(ov&&ov.has(t))return ov.get(t);// pixel data is reached through the texture's own data pointer (+0x10); in original levels it equals t+0x20, but copied textures keep their data elsewhere
  const dp=t+16+4<=A.length?(A[t+16]|A[t+17]<<8|A[t+18]<<16|A[t+19]<<24)>>>0:0,o=(dp>=0x400&&dp+18<=A.length)?dp:t+0x20;if(o+18>A.length)return null;
  const idl=A[o],cmt=A[o+1],typ=A[o+2],first=A[o+3]|A[o+4]<<8,clen=A[o+5]|A[o+6]<<8,cb=A[o+7],
   w=A[o+12]|A[o+13]<<8,h=A[o+14]|A[o+15]<<8,bpp=A[o+16],desc=A[o+17];
@@ -375,7 +378,7 @@ function bigbInfo(u8){const d=new DataView(u8.buffer,u8.byteOffset,u8.length);if
 // until the remaining classic scripts are converted in later steps.
 export {
   u32, parseVol, inflate, wadName, readWad, cstr, r2,
-  shapeAt, instances, fixups, parseTga, parseLcm, parseColl,
+  shapeAt, instances, fixups, parseTga, setTexOverride, clearTexOverrides, parseLcm, parseColl,
   mergeBB, bbox, xboxVerts, xboxInstances,
   SI_OPS, SI_CAT, SI_PROP, siProp, SI_ARGN, swa,
   SI_SKIP, SI_L0, SI_L1, SI_L2, siLevel, siParseArgs,
