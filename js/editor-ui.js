@@ -3,15 +3,16 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js?v=step23-texture-live';
+import { EC } from './editor-core.js?v=step24-class-tint';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step23-texture-live';
-import { installModelEditor } from './models-panel.js?v=step23-texture-live';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step24-class-tint';
+import { installModelEditor } from './models-panel.js?v=step24-class-tint';
 import { installScriptEditor } from './script-editor.js';
 import { installTexturePanel } from './textures-panel.js';
+import { installTintUi } from './class-tint.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step23-texture-live';
-import { installPrefabManager } from './prefabs.js?v=step23-texture-live';
+import { installEntityEditor } from './entity-editor.js?v=step24-class-tint';
+import { installPrefabManager } from './prefabs.js?v=step24-class-tint';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -261,7 +262,8 @@ const entityEditor=installEntityEditor({
 edUpdate=entityEditor.update;
 rec=entityEditor.rec;
 ground=entityEditor.ground;
-const oeu=edUpdate;edUpdate=function(){oeu();try{prefabManager.injectMoveControl()}catch(e){console.error(e)}};
+const tintUi=installTintUi({Viewer,getProject:()=>PRJ,wadOf,rec:q=>rec(q),onChange:()=>{}});
+const oeu=edUpdate;edUpdate=function(){oeu();try{prefabManager.injectMoveControl()}catch(e){console.error(e)}try{tintUi.inject()}catch(e){console.error(e)}};
 edUpdate();
 // objects added from another level take their script info from the object they were copied from
 const oscr=Viewer.scr;Viewer.scr=function(e){const x=oscr(e);if(x||!e.added||!Viewer.SCR)return x;const w=wadOf(e.L),a=w&&((PRJ.wads[w]||{}).adds||[])[e.added-1];if(!a)return null;const L2=lvOf(a.from.w);if(typeof Viewer.analyseLevel==='function')Viewer.analyseLevel(L2);const y=Viewer.SCR.levels[L2]&&Viewer.SCR.levels[L2][a.from.i];if(!y)return null;const c=Viewer.SCR.classes[y.k];return c?{c,r:y.r,l:y.l}:null};
