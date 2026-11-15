@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import * as V from '../js/vol-core.js';
 import { EC } from '../js/editor-core.js';
 import * as T from '../js/texture-tools.js';
-import { alphaProps } from '../js/vol-core.js';
+import { alphaProps, setTexMode, clearTexModes } from '../js/vol-core.js';
 
 const px = (w, h, f) => { const a = new Uint8Array(w * h * 4); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) a.set(f(x, y), (y * w + x) * 4); return a; };
 const grad = (w, h) => px(w, h, (x, y) => [x * 255 / w | 0, y * 255 / h | 0, ((x ^ y) & 8) ? 255 : 40, 255]);
@@ -12,8 +12,15 @@ const grad = (w, h) => px(w, h, (x, y) => [x * 255 / w | 0, y * 255 / h | 0, ((x
 const mask = new Uint8Array(16 * 16 * 4).fill(255), glass = new Uint8Array(16 * 16 * 4).fill(255);
 for (let i = 0; i < 256; i++) { mask[4 * i + 3] = i % 2 ? 0 : 255; glass[4 * i + 3] = 40 + (i % 150); }
 const dec = rgba => { const A = new Uint8Array(0x20 + 18 + rgba.length); A.set(T.encodeTga(rgba, 16, 16, { mode: 'truecolour' }), 0x20); return V.parseTga(A, 0); };
-assert.deepEqual(alphaProps(dec(mask)), { transparent: false, depthWrite: true, alphaTest: 0.5 });
+assert.deepEqual(alphaProps(dec(mask)), { transparent: false, depthWrite: true, alphaTest: 0.5, blending: 1 });
 assert.equal(alphaProps(dec(glass)).transparent, true); assert.equal(alphaProps(dec(new Uint8Array(1024).fill(255))).alphaTest, 0);
+// editor-only display modes override the automatic choice and are keyed by wad name
+const tgaImg = rgba => { const A = new Uint8Array(0x20 + 18 + rgba.length); A.set(T.encodeTga(rgba, 16, 16, { mode: 'truecolour' }), 0x20); A.wadName = 'x.LCM'; return A; };
+{ const black = new Uint8Array(1024); for (let i = 0; i < 256; i++) { black[4 * i] = black[4 * i + 1] = black[4 * i + 2] = i % 2 ? 0 : 200; black[4 * i + 3] = 255; }
+  const A = tgaImg(black); assert.equal(V.parseTga(A, 0).alpha, false);
+  setTexMode('x.LCM', 0, 'additive'); assert.deepEqual(alphaProps(V.parseTga(A, 0)), { transparent: true, depthWrite: false, alphaTest: 0, blending: 2 });
+  setTexMode('x.LCM', 0, 'keyblack'); const k = V.parseTga(A, 0); assert.equal(k.alpha, true); assert.equal(k.rgba[3], 255); assert.equal(k.rgba[7], 0, 'black pixels become transparent');
+  setTexMode('x.LCM', 0, 'auto'); assert.equal(V.parseTga(A, 0).mode, undefined); clearTexModes('x.LCM'); }
 // pure helpers
 assert.throws(() => T.encodeTga(grad(100, 100), 100, 100), /power of two/);
 const t64 = T.encodeTga(grad(64, 64), 64, 64); assert.equal(T.tgaInfo(t64).len, t64.length);
@@ -48,5 +55,7 @@ else {
   const [A0, B0] = V.readWad(buf, files.find(x => x.name === '10-00.LCS')), pm = EC.parseModels(A0, B0);
   assert.equal(alphaProps(pm.find(m => m.poff === 0x3fc0f0).tex).transparent, true, 'heart glass is translucent');
   assert.equal(alphaProps(pm.find(m => m.poff === 0x3fd330).tex).alphaTest, 0.5, 'fern leaf is a cutout');
+  const [AL, BL] = V.readWad(buf, files.find(x => x.name === '10-31.LCM')), GL = V.parseLcm(AL, BL);
+  assert.ok(GL.bufs.every(b => b.col4.length === b.nv * 4 && b.al.length === b.nv), 'level vertex buffers keep their per-vertex alpha');
   console.log('PASS texture replace (in place + pointer swap) and add, resource directory healed, geometry unchanged');
 }

@@ -1,7 +1,7 @@
 // Textures panel: browse a level wad's textures, export one as PNG, replace it with your own image, or add a brand-new texture.
 // Edits are stored in the project as base64 TGA (your pixels only) under project.textures[wad].ops and applied by "build patched .vol".
 import { listTextures, encodeTga, isPow2 } from './texture-tools.js';
-import { parseTga, setTexOverride, clearTexOverrides } from './vol-core.js';
+import { parseTga, setTexOverride, clearTexOverrides, setTexMode, clearTexModes } from './vol-core.js';
 
 export function installTexturePanel({ Viewer, getProject, getWad, onChange = () => {} }) {
   const $ = id => document.getElementById(id);
@@ -12,6 +12,8 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
     + '<select id=tx_w style="width:100%"></select>'
     + '<div style="margin:4px 0"><label title="Resample your image to the size of the texture it replaces. Safest: the model\'s UVs and the file layout stay exactly as in the original."><input type=checkbox id=tx_keep checked> replace at the original size</label> '
     + '<select id=tx_mode title="palette = 8-bit, up to 256 colours, like the game\'s own textures. truecolour = 32-bit, 4x bigger."><option value=palette>256-colour palette<option value=truecolour>32-bit truecolour</select></div>'
+    + '<div style="margin:4px 0"><label title="How the editor draws the selected texture. The game decides this itself and it is not stored where the editor can read it, so set it to match what you see in game. Display only: nothing is written to the game files."><b>display as</b> <select id=tx_disp disabled><option value=auto>auto<option value=opaque>opaque<option value=blend>translucent<option value=additive>additive (black = see-through)<option value=cutout>cutout (alpha)<option value=keyblack>cutout (black = transparent)</select></label> '
+    + '<label title="List only textures without alpha that are at least 40% near-black: the usual smoke, glow and light-ray candidates"><input type=checkbox id=tx_blk> black-background candidates</label></div>'
     + '<div id=tx_grid style="display:flex;flex-wrap:wrap;gap:4px;max-height:260px;overflow:auto;border:1px solid #333;padding:3px"></div>'
     + '<div id=tx_sel class=h style="margin:4px 0">click a texture</div>'
     + '<div><button id=tx_exp disabled>export PNG</button> <button id=tx_rep disabled>replace with image…</button> <button id=tx_add>add new texture from image…</button> <button id=tx_undo disabled>revert this texture</button></div>'
@@ -21,6 +23,16 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
 
   let list = [], cur = null, mode = null; // mode: 'replace' | 'add'
   const shown = new Map(); // wad -> Set(texture offsets currently previewed from the project)
+  const modeShown = new Map(); // wad -> Set(texture offsets whose display mode was applied)
+  const modes = w => { const D = getProject().display; return (D && D[w]) || {}; };
+  // editor-only display modes: register them for the parsers, then re-texture the live level; objects are redrawn by onChange
+  function syncModes(w) {
+    const g = getWad(w), id = w.replace(/\.\w+$/, ''), m = modes(w), prev = modeShown.get(w) || new Set(), now = new Set(Object.keys(m).map(Number));
+    clearTexModes(w); for (const off of now) setTexMode(w, off, m[off]);
+    if (g && /\.LCM$/i.test(w) && Viewer.retexture) for (const off of new Set([...prev, ...now])) Viewer.retexture(id, off, parseTga(g.A, off));
+    modeShown.set(w, now);
+  }
+  function darkFrac(img) { const a = img.rgba; let d = 0; for (let i = 0; i < a.length; i += 4) if (a[i] < 24 && a[i + 1] < 24 && a[i + 2] < 24) d++; return d / (a.length / 4); }
 
   const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
   const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
@@ -40,7 +52,7 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
     for (const off of prev) if (!now.has(off) && g && /\.LCM$/i.test(w) && Viewer.retexture) Viewer.retexture(id, off, parseTga(g.A, off)); // reverted: put the original back
     shown.set(w, now);
   }
-  function syncAll() { const T = getProject().textures || {}; for (const w of Object.keys(T)) { try { sync(w); } catch (e) { console.error(e); } } }
+  function syncAll() { const T = getProject().textures || {}; for (const w of Object.keys(T)) { try { sync(w); } catch (e) { console.error(e); } } const D = getProject().display || {}; for (const w of Object.keys(D)) { try { syncModes(w); } catch (e) { console.error(e); } } }
 
   function thumb(img, size) {
     const c = document.createElement('canvas'); c.width = img.w; c.height = img.h;
@@ -61,18 +73,19 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
     for (const c of $('tx_grid').children) c.style.outline = '';
     if (el) el.style.outline = '2px solid #fc6';
     $('tx_sel').textContent = 'texture @0x' + t.off.toString(16) + ' · ' + t.w + 'x' + t.h + ' · ' + t.tgaLen + ' bytes' + (ops(wad()).some(x => x.op === 'replace' && x.tex === t.off) ? ' · REPLACED in project' : '');
-    $('tx_exp').disabled = !t.img; $('tx_rep').disabled = false; status();
+    $('tx_exp').disabled = !t.img; $('tx_rep').disabled = false; $('tx_disp').disabled = false; $('tx_disp').value = modes(wad())[t.off] || 'auto'; status();
   }
 
   function fill() {
-    const w = wad(), g = w && getWad(w); $('tx_grid').innerHTML = ''; list = []; cur = null; $('tx_sel').textContent = 'click a texture'; $('tx_exp').disabled = $('tx_rep').disabled = true;
+    const w = wad(), g = w && getWad(w); $('tx_grid').innerHTML = ''; list = []; cur = null; $('tx_sel').textContent = 'click a texture'; $('tx_exp').disabled = $('tx_rep').disabled = $('tx_disp').disabled = true;
     if (!g) { status(); return; }
     list = listTextures(g.A, g.B);
     const rep = new Map(ops(w).filter(x => x.op === 'replace').map(x => [x.tex, x]));
     for (const t of list) {
       const img = t.img, r = rep.get(t.off); // t.img already shows the project's replacement (parse override)
       if (!img) continue;
-      const c = thumb(img, 64); c.title = '@0x' + t.off.toString(16) + ' ' + t.w + 'x' + t.h; c.style.cursor = 'pointer'; c.style.border = r ? '1px solid #fc6' : '1px solid #333';
+      if ($('tx_blk').checked && !modes(w)[t.off] && (img.alpha || darkFrac(img) < 0.4)) continue;
+      const c = thumb(img, 64); c.title = '@0x' + t.off.toString(16) + ' ' + t.w + 'x' + t.h; c.style.cursor = 'pointer'; c.style.border = r ? '1px solid #fc6' : modes(w)[t.off] ? '1px solid #6cf' : '1px solid #333';
       c.onclick = () => select(t, c); $('tx_grid').appendChild(c);
     }
     status();
@@ -88,6 +101,13 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
 
   $('tx_x').onclick = () => { panel.style.display = 'none'; };
   $('tx_w').onchange = fill;
+  $('tx_blk').onchange = fill;
+  $('tx_disp').onchange = () => {
+    if (!cur) return; const w = wad(), P = getProject(); P.display = P.display || {}; const m = P.display[w] = P.display[w] || {};
+    const v = $('tx_disp').value; if (v === 'auto') delete m[cur.off]; else m[cur.off] = v;
+    if (!Object.keys(m).length) delete P.display[w];
+    const keep = cur; syncModes(w); onChange(); fill(); const el = [...$('tx_grid').children].find(c => c.title && c.title.startsWith('@0x' + keep.off.toString(16) + ' ')); const t = list.find(x => x.off === keep.off); if (t) select(t, el);
+  };
   $('tx_exp').onclick = () => {
     if (!cur || !cur.img) return;
     const c = document.createElement('canvas'); c.width = cur.w; c.height = cur.h;

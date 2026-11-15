@@ -54,7 +54,13 @@ function fixups(B){const d=new DataView(B.buffer,B.byteOffset,B.length),m={},rel
 const TEXOV=new Map();// wad name -> Map(texture offset -> decoded image): editor-side preview of project texture edits
 function setTexOverride(w,off,img){let m=TEXOV.get(w);if(!m)TEXOV.set(w,m=new Map());if(img)m.set(off,img);else m.delete(off)}
 function clearTexOverrides(w){TEXOV.delete(w)}
-function parseTga(A,t){const ov=A.wadName&&TEXOV.get(A.wadName);if(ov&&ov.has(t))return ov.get(t);// pixel data is reached through the texture's own data pointer (+0x10); in original levels it equals t+0x20, but copied textures keep their data elsewhere
+// Editor-only display mode per texture (how the viewer draws it): 'opaque' | 'blend' | 'additive' | 'cutout' | 'keyblack'. Not written to the game files.
+const TEXMODE=new Map();
+function setTexMode(w,off,mode){let m=TEXMODE.get(w);if(!m)TEXMODE.set(w,m=new Map());if(mode&&mode!=='auto')m.set(off,mode);else m.delete(off)}
+function clearTexModes(w){TEXMODE.delete(w)}
+function parseTga(A,t){const img=parseTgaBase(A,t);const mode=img&&A.wadName&&TEXMODE.has(A.wadName)&&TEXMODE.get(A.wadName).get(t);if(!mode)return img;
+ const r={...img,mode};if(mode==='keyblack'){const o=new Uint8Array(img.rgba);for(let i=0;i<o.length;i+=4)o[i+3]=Math.max(o[i],o[i+1],o[i+2])<24?0:255;r.rgba=o;r.alpha=true;r.soft=false}return r}
+function parseTgaBase(A,t){const ov=A.wadName&&TEXOV.get(A.wadName);if(ov&&ov.has(t))return ov.get(t);// pixel data is reached through the texture's own data pointer (+0x10); in original levels it equals t+0x20, but copied textures keep their data elsewhere
  const dp=t+16+4<=A.length?(A[t+16]|A[t+17]<<8|A[t+18]<<16|A[t+19]<<24)>>>0:0,o=(dp>=0x400&&dp+18<=A.length)?dp:t+0x20;if(o+18>A.length)return null;
  const idl=A[o],cmt=A[o+1],typ=A[o+2],first=A[o+3]|A[o+4]<<8,clen=A[o+5]|A[o+6]<<8,cb=A[o+7],
   w=A[o+12]|A[o+13]<<8,h=A[o+14]|A[o+15]<<8,bpp=A[o+16],desc=A[o+17];
@@ -77,7 +83,9 @@ function parseTga(A,t){const ov=A.wadName&&TEXOV.get(A.wadName);if(ov&&ov.has(t)
  let soft=false;if(mn<255){let np=0;for(let i=3;i<out.length;i+=4){const a=out[i];if(a!==0&&a!==255)np++}soft=np>=out.length/4*0.25}
  return{w,h,rgba:out,alpha:mn<255,soft}}
 // three.js material settings for a decoded texture's alpha (see parseTga)
-function alphaProps(img){return!img||!img.alpha?{transparent:false,depthWrite:true,alphaTest:0}:img.soft?{transparent:true,depthWrite:false,alphaTest:0.01}:{transparent:false,depthWrite:true,alphaTest:0.5}}
+function alphaProps(img){const OP={transparent:false,depthWrite:true,alphaTest:0,blending:1},CUT={transparent:false,depthWrite:true,alphaTest:0.5,blending:1},TR={transparent:true,depthWrite:false,alphaTest:0.01,blending:1};
+ if(!img)return OP;switch(img.mode){case'opaque':return OP;case'blend':return TR;case'cutout':case'keyblack':return CUT;case'additive':return{transparent:true,depthWrite:false,alphaTest:0,blending:2}}
+ return!img.alpha?OP:img.soft?TR:CUT}
 // Render geometry: import 0x23 = D3D vertex buffer {+0C nVerts, +10 P verts (24 B: xyz, BGRA, uv), +14 nIdx, +18 P u16 indices}.
 // Import 0x20 = draw part; tail at (end-44): {cx,cy,cz,0,startVertex,startIndex}, preceded by {1,5(strip),nVerts,primCount,P}.
 // A part draws primCount+2 indices as a D3D triangle strip. +0x10 = texture (import 1, or anim 6 / layered 7 wrapping one).
@@ -87,11 +95,11 @@ function parseLcm(A,B){const imp=fixups(B),vbl=imp[0x80000023];if(!vbl||!vbl.len
  const VB=new Map();
  for(const vb of vbl){const nv=u32(d,vb+12),vo=u32(d,vb+16),ni=u32(d,vb+20),io=u32(d,vb+24);
   if(vo+nv*24>A.length||io+ni*2>A.length)continue;
-  const pos=new Float32Array(nv*3),col=new Uint8Array(nv*3),uv=new Float32Array(nv*2),I=new Uint16Array(ni);
+  const pos=new Float32Array(nv*3),col=new Uint8Array(nv*3),col4=new Uint8Array(nv*4),al=new Uint8Array(nv),uv=new Float32Array(nv*2),I=new Uint16Array(ni);
   for(let i=0;i<nv;i++){const o=vo+24*i;pos[3*i]=fl(o);pos[3*i+1]=fl(o+4);pos[3*i+2]=fl(o+8);
-   col[3*i]=A[o+14];col[3*i+1]=A[o+13];col[3*i+2]=A[o+12];uv[2*i]=fl(o+16);uv[2*i+1]=fl(o+20)}
+   col[3*i]=A[o+14];col[3*i+1]=A[o+13];col[3*i+2]=A[o+12];al[i]=A[o+15];col4[4*i]=A[o+14];col4[4*i+1]=A[o+13];col4[4*i+2]=A[o+12];col4[4*i+3]=A[o+15];uv[2*i]=fl(o+16);uv[2*i+1]=fl(o+20)}
   for(let i=0;i<ni;i++)I[i]=d.getUint16(io+2*i,true);
-  VB.set(vb,{nv,ni,pos,col,uv,I,groups:new Map(),tris:0})}
+  VB.set(vb,{nv,ni,pos,col,col4,al,uv,I,groups:new Map(),tris:0})}
  if(!VB.size)return null;
  const tex=new Set(imp[0x80000001]||[]),s6=new Set(imp[0x80000006]||[]),s7=new Set(imp[0x80000007]||[]);
  const res=(t,k=0)=>{if(tex.has(t))return t;if(k>4)return 0;if(s7.has(t))return res(rd(rd(t+16)),k+1);if(s6.has(t))return res(rd(rd(rd(t+16)+4)),k+1);return 0};
@@ -108,7 +116,7 @@ function parseLcm(A,B){const imp=fixups(B),vbl=imp[0x80000023];if(!vbl||!vbl.len
  const bufs=[],texs={};
  for(const V of VB.values()){const gl=[];
   for(const[tk,g]of V.groups){gl.push({tex:tk,idx:V.nv<65536?Uint16Array.from(g):Uint32Array.from(g)});if(tk&&!(tk in texs))texs[tk]=parseTga(A,tk)}
-  bufs.push({nv:V.nv,pos:V.pos,col:V.col,uv:V.uv,groups:gl})}
+  bufs.push({nv:V.nv,pos:V.pos,col:V.col,col4:V.col4,al:V.al,uv:V.uv,groups:gl})}
  let cov=0,tot=0;for(const V of VB.values()){cov+=V.cov||0;tot+=V.ni}
  return{bufs,texs,tris,parts:ps.length,missed,cov,tot}}
 // Collision mesh at A+0: {+20 P verts, +24 nVerts}; 16-byte verts xyz + flags (0x80 valid, 0x40 closes triangle (i-2,i-1,i), 0x100 swaps order, >>16 = material)
@@ -383,7 +391,7 @@ function bigbInfo(u8){const d=new DataView(u8.buffer,u8.byteOffset,u8.length);if
 // until the remaining classic scripts are converted in later steps.
 export {
   u32, parseVol, inflate, wadName, readWad, cstr, r2,
-  shapeAt, instances, fixups, parseTga, alphaProps, setTexOverride, clearTexOverrides, parseLcm, parseColl,
+  shapeAt, instances, fixups, parseTga, alphaProps, setTexMode, clearTexModes, setTexOverride, clearTexOverrides, parseLcm, parseColl,
   mergeBB, bbox, xboxVerts, xboxInstances,
   SI_OPS, SI_CAT, SI_PROP, siProp, SI_ARGN, swa,
   SI_SKIP, SI_L0, SI_L1, SI_L2, siLevel, siParseArgs,

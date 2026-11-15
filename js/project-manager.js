@@ -18,6 +18,7 @@ export function installProjectManager({
     j.wads = j.wads || {};
     j.textures = j.textures || {};
     j.tints = j.tints || {};
+    j.display = j.display || {};
     for (const w in j.tints) j.tints[w].inst = j.tints[w].inst || {};
     for (const w in j.textures) j.textures[w].ops = Array.isArray(j.textures[w].ops) ? j.textures[w].ops : [];
     for (const w in j.wads) {
@@ -141,7 +142,7 @@ export function installProjectManager({
       for (const f of Viewer.files) if (f.vol) vv[f.vol] = f.buf.byteLength;
       PRJ.vols = vv;
       const scr = buildScriptWadsFp();
-      dl([JSON.stringify({app:'ininja-editor', v:1, vols:PRJ.vols, models:PRJ.models || {}, prefabs:PRJ.prefabs || [], wads, scripts:scr, textures:texturesFp(), tints:tintsFp()}, null, 1)], 'ininja-project.json', 'application/json');
+      dl([JSON.stringify({app:'ininja-editor', v:1, vols:PRJ.vols, models:PRJ.models || {}, prefabs:PRJ.prefabs || [], wads, scripts:scr, textures:texturesFp(), tints:tintsFp(), display:PRJ.display || {}}, null, 1)], 'ininja-project.json', 'application/json');
       $('ed_sum').textContent = 'project saved: ' + Object.keys(wads).length + ' level(s) with instance edits, ' + Object.keys(scr).length + ' with code edits, ' + (PRJ.prefabs || []).length + ' prefab favourite(s) (holds only your edits, no game data)';
     } catch (x) {
       $('ed_sum').textContent = 'save failed: ' + x;

@@ -56,13 +56,15 @@ function collColors(c){const n=c.mat.length,out=new Float32Array(n*9),p=c.pos,C=
   for(let k=0;k<3;k++){out[o+3*k]=C.r;out[o+3*k+1]=C.g;out[o+3*k+2]=C.b}}return out}
 function buildLevel(L,lv){const g=new THREE.Group(),G=lv.geo;
  if(G){const T={};
-  for(const B of G.bufs){const P=new THREE.BufferAttribute(B.pos,3),C=new THREE.BufferAttribute(B.col,3,true),U=new THREE.BufferAttribute(B.uv,2);
+  for(const B of G.bufs){const P=new THREE.BufferAttribute(B.pos,3),C=new THREE.BufferAttribute(B.col4,4,true),U=new THREE.BufferAttribute(B.uv,2);
   for(const gr of B.groups){const geo=new THREE.BufferGeometry();geo.setAttribute('position',P);geo.setAttribute('color',C);geo.setAttribute('uv',U);geo.setIndex(new THREE.BufferAttribute(gr.idx,1));
    let map=null,alpha=false;const t=G.texs[gr.tex];
    if(t){if(!T[gr.tex]){const x=new THREE.DataTexture(t.rgba,t.w,t.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;
      x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;T[gr.tex]=x}map=T[gr.tex];alpha=t.alpha}
-   const m=new THREE.MeshBasicMaterial({map,vertexColors:true,side:THREE.DoubleSide,...alphaProps(t),polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
-   m.userData={map,texOff:gr.tex,lv:L};mats.push(m);const mesh=new THREE.Mesh(geo,m);mesh.userData.kind='geo';g.add(mesh)}}}
+   // the vertex buffer carries an alpha per vertex (fog sheets, water, smoke): draw such groups translucent
+   let lo=255;for(const ix of gr.idx){const a=B.al[ix];if(a<lo)lo=a}const va=lo<250,ap=alphaProps(t);if(va&&!ap.transparent){ap.transparent=true;ap.depthWrite=false;ap.alphaTest=0}
+   const m=new THREE.MeshBasicMaterial({map,vertexColors:true,side:THREE.DoubleSide,...ap,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
+   m.userData={map,texOff:gr.tex,lv:L,vtxA:va};mats.push(m);const mesh=new THREE.Mesh(geo,m);mesh.userData.kind='geo';g.add(mesh)}}}
  if(lv.coll&&lv.coll.mat.length){const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(lv.coll.pos,3));
   geo.setAttribute('color',new THREE.BufferAttribute(collColors(lv.coll),3));
   if(!collMat)collMat=new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide});
@@ -314,8 +316,9 @@ rs();camera.position.set(0,50,100);setCam();requestAnimationFrame(tick);
 // swap one texture of an already-built level in place (no reload): used by the Textures panel
 function retexture(id,off,img){const lv=D.find(x=>x.id===id);if(lv&&lv.geo&&lv.geo.texs)lv.geo.texs[off]=img;
   for(const m of mats){if(m.userData.lv!==id||m.userData.texOff!==off)continue;
-    if(!img){m.map=null;Object.assign(m,alphaProps(null))}else{const x=new THREE.DataTexture(img.rgba,img.w,img.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;
-      if(m.map)m.map.dispose();m.map=x;m.userData.map=x;Object.assign(m,alphaProps(img))}
+    const ap=alphaProps(img);if(m.userData.vtxA&&!ap.transparent){ap.transparent=true;ap.depthWrite=false;ap.alphaTest=0}
+    if(!img){m.map=null;Object.assign(m,ap)}else{const x=new THREE.DataTexture(img.rgba,img.w,img.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;
+      if(m.map)m.map.dispose();m.map=x;m.userData.map=x;Object.assign(m,ap)}
     m.needsUpdate=true}
   need=true}
 const viewerApiBindings = {

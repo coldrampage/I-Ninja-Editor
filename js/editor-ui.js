@@ -3,16 +3,16 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js?v=step27-alpha-kinds';
+import { EC } from './editor-core.js?v=step28-display-modes';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step27-alpha-kinds';
-import { installModelEditor } from './models-panel.js?v=step27-alpha-kinds';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step28-display-modes';
+import { installModelEditor } from './models-panel.js?v=step28-display-modes';
 import { installScriptEditor } from './script-editor.js';
 import { installTexturePanel } from './textures-panel.js';
 import { installTintUi } from './class-tint.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step27-alpha-kinds';
-import { installPrefabManager } from './prefabs.js?v=step27-alpha-kinds';
+import { installEntityEditor } from './entity-editor.js?v=step28-display-modes';
+import { installPrefabManager } from './prefabs.js?v=step28-display-modes';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
