@@ -1,6 +1,6 @@
 // Viewer renderer and state. Binary/parser helpers are explicit module imports.
 import {
-  parseVol, wadName, readWad, instances, parseLcm, parseColl,
+  parseVol, wadName, readWad, instances, parseLcm, parseColl, alphaProps,
   mergeBB, bbox, xboxVerts, xboxInstances, analyseStrats, bigbInfo
 } from './vol-core.js';
 
@@ -61,7 +61,7 @@ function buildLevel(L,lv){const g=new THREE.Group(),G=lv.geo;
    let map=null,alpha=false;const t=G.texs[gr.tex];
    if(t){if(!T[gr.tex]){const x=new THREE.DataTexture(t.rgba,t.w,t.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;
      x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;T[gr.tex]=x}map=T[gr.tex];alpha=t.alpha}
-   const m=new THREE.MeshBasicMaterial({map,vertexColors:true,side:THREE.DoubleSide,alphaTest:alpha?.5:0,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
+   const m=new THREE.MeshBasicMaterial({map,vertexColors:true,side:THREE.DoubleSide,...alphaProps(t),polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
    m.userData={map,texOff:gr.tex,lv:L};mats.push(m);const mesh=new THREE.Mesh(geo,m);mesh.userData.kind='geo';g.add(mesh)}}}
  if(lv.coll&&lv.coll.mat.length){const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(lv.coll.pos,3));
   geo.setAttribute('color',new THREE.BufferAttribute(collColors(lv.coll),3));
@@ -314,8 +314,8 @@ rs();camera.position.set(0,50,100);setCam();requestAnimationFrame(tick);
 // swap one texture of an already-built level in place (no reload): used by the Textures panel
 function retexture(id,off,img){const lv=D.find(x=>x.id===id);if(lv&&lv.geo&&lv.geo.texs)lv.geo.texs[off]=img;
   for(const m of mats){if(m.userData.lv!==id||m.userData.texOff!==off)continue;
-    if(!img){m.map=null;m.alphaTest=0}else{const x=new THREE.DataTexture(img.rgba,img.w,img.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;
-      if(m.map)m.map.dispose();m.map=x;m.userData.map=x;m.alphaTest=img.alpha?.5:0}
+    if(!img){m.map=null;Object.assign(m,alphaProps(null))}else{const x=new THREE.DataTexture(img.rgba,img.w,img.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;
+      if(m.map)m.map.dispose();m.map=x;m.userData.map=x;Object.assign(m,alphaProps(img))}
     m.needsUpdate=true}
   need=true}
 const viewerApiBindings = {

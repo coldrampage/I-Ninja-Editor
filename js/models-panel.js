@@ -1,6 +1,6 @@
 // Models panel: browsing parsed meshes, previewing and assigning 3D overlays.
-import { siWad, SiAn } from './vol-core.js';
-import { setEntityOverlayRefresh } from './viewer.js?v=step26-tint-recognise';
+import { siWad, SiAn, alphaProps } from './vol-core.js';
+import { setEntityOverlayRefresh } from './viewer.js?v=step27-alpha-kinds';
 
 export function installModelEditor({Viewer, THREE, EC, getProject, getWad, wadOf, summary}) {
 // ---- models: browse the object meshes of any strat wad, assign one to an entity (or a class) so it is drawn in the 3D view; assignments are saved in the project
@@ -49,7 +49,7 @@ const registryGroupCaption=(g,n)=>{const role=g.source==='groundtruth'?'confirme
 const texOf=t=>{if(!t)return null;if(t.x)return t.x;const x=new THREE.DataTexture(t.rgba,t.w,t.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;return t.x=x};
 const geoOf=(w,m,p)=>{const k=w+'|'+m+'|'+(p??'');if(GC[k])return GC[k];const M=modelsOf(w).find(x=>p!=null?x.poff===p:x.off===m);if(!M)return null;const g=new THREE.BufferGeometry();
  g.setAttribute('position',new THREE.BufferAttribute(M.pos,3));g.setAttribute('normal',new THREE.BufferAttribute(M.nrm,3));g.setAttribute('uv',new THREE.BufferAttribute(M.uv,2));g.setIndex(new THREE.BufferAttribute(M.idx,1));
- return GC[k]={g,M,mat:new THREE.MeshBasicMaterial({map:texOf(M.tex),color:M.tex?0xffffff:0xb0b8d0,side:THREE.DoubleSide,alphaTest:M.tex&&M.tex.alpha?.5:0})}};
+ return GC[k]={g,M,mat:new THREE.MeshBasicMaterial({map:texOf(M.tex),color:M.tex?0xffffff:0xb0b8d0,side:THREE.DoubleSide,...alphaProps(M.tex)})}};
 // auto model fallback: an instance init register that points at a 16-byte model-table record {descriptor ptr,0,0,0}
 const AUTOC={};
 function autoModel(q,w){const g=getWad(w);if(!g)return null;const AL=modelsOf(w);if(!AL.modelGroups)return null;

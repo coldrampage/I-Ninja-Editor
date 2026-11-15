@@ -4,9 +4,16 @@ import fs from 'node:fs';
 import * as V from '../js/vol-core.js';
 import { EC } from '../js/editor-core.js';
 import * as T from '../js/texture-tools.js';
+import { alphaProps } from '../js/vol-core.js';
 
 const px = (w, h, f) => { const a = new Uint8Array(w * h * 4); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) a.set(f(x, y), (y * w + x) * 4); return a; };
 const grad = (w, h) => px(w, h, (x, y) => [x * 255 / w | 0, y * 255 / h | 0, ((x ^ y) & 8) ? 255 : 40, 255]);
+// alpha kind: mostly 0/255 = cutout, many in-between values = translucent
+const mask = new Uint8Array(16 * 16 * 4).fill(255), glass = new Uint8Array(16 * 16 * 4).fill(255);
+for (let i = 0; i < 256; i++) { mask[4 * i + 3] = i % 2 ? 0 : 255; glass[4 * i + 3] = 40 + (i % 150); }
+const dec = rgba => { const A = new Uint8Array(0x20 + 18 + rgba.length); A.set(T.encodeTga(rgba, 16, 16, { mode: 'truecolour' }), 0x20); return V.parseTga(A, 0); };
+assert.deepEqual(alphaProps(dec(mask)), { transparent: false, depthWrite: true, alphaTest: 0.5 });
+assert.equal(alphaProps(dec(glass)).transparent, true); assert.equal(alphaProps(dec(new Uint8Array(1024).fill(255))).alphaTest, 0);
 // pure helpers
 assert.throws(() => T.encodeTga(grad(100, 100), 100, 100), /power of two/);
 const t64 = T.encodeTga(grad(64, 64), 64, 64); assert.equal(T.tgaInfo(t64).len, t64.length);
@@ -38,5 +45,8 @@ else {
   V.setTexOverride('10-00.LCM', same.off, img); assert.equal(V.parseTga(A, same.off), img);
   assert.equal(V.parseLcm(A, B).texs[same.off] === img || !(same.off in V.parseLcm(A, B).texs) || true, true);
   V.clearTexOverrides('10-00.LCM'); assert.equal(V.parseTga(A, same.off).w, orig.w);
+  const [A0, B0] = V.readWad(buf, files.find(x => x.name === '10-00.LCS')), pm = EC.parseModels(A0, B0);
+  assert.equal(alphaProps(pm.find(m => m.poff === 0x3fc0f0).tex).transparent, true, 'heart glass is translucent');
+  assert.equal(alphaProps(pm.find(m => m.poff === 0x3fd330).tex).alphaTest, 0.5, 'fern leaf is a cutout');
   console.log('PASS texture replace (in place + pointer swap) and add, resource directory healed, geometry unchanged');
 }

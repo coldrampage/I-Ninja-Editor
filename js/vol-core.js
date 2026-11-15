@@ -72,7 +72,12 @@ function parseTga(A,t){const ov=A.wadName&&TEXOV.get(A.wadName);if(ov&&ov.has(t)
    out[q]=A[s+2];out[q+1]=A[s+1];out[q+2]=A[s];out[q+3]=px==4?A[s+3]:255;const a=out[q+3];if(a<mn)mn=a;if(a>mx)mx=a}}}
  else return null;
  if(mx==0){for(let i=3;i<out.length;i+=4)out[i]=255;mn=255}
- return{w,h,rgba:out,alpha:mn<255}}
+ // Alpha kind, from the texture's own alpha channel: a mostly 0/255 mask (leaves, fences) is drawn as a cutout, a texture with many in-between
+ // values (glass, shadows, glows) is drawn translucent. The part/material data has no stored cutout-vs-blend setting that has been found.
+ let soft=false;if(mn<255){let np=0;for(let i=3;i<out.length;i+=4){const a=out[i];if(a!==0&&a!==255)np++}soft=np>=out.length/4*0.25}
+ return{w,h,rgba:out,alpha:mn<255,soft}}
+// three.js material settings for a decoded texture's alpha (see parseTga)
+function alphaProps(img){return!img||!img.alpha?{transparent:false,depthWrite:true,alphaTest:0}:img.soft?{transparent:true,depthWrite:false,alphaTest:0.01}:{transparent:false,depthWrite:true,alphaTest:0.5}}
 // Render geometry: import 0x23 = D3D vertex buffer {+0C nVerts, +10 P verts (24 B: xyz, BGRA, uv), +14 nIdx, +18 P u16 indices}.
 // Import 0x20 = draw part; tail at (end-44): {cx,cy,cz,0,startVertex,startIndex}, preceded by {1,5(strip),nVerts,primCount,P}.
 // A part draws primCount+2 indices as a D3D triangle strip. +0x10 = texture (import 1, or anim 6 / layered 7 wrapping one).
@@ -378,7 +383,7 @@ function bigbInfo(u8){const d=new DataView(u8.buffer,u8.byteOffset,u8.length);if
 // until the remaining classic scripts are converted in later steps.
 export {
   u32, parseVol, inflate, wadName, readWad, cstr, r2,
-  shapeAt, instances, fixups, parseTga, setTexOverride, clearTexOverrides, parseLcm, parseColl,
+  shapeAt, instances, fixups, parseTga, alphaProps, setTexOverride, clearTexOverrides, parseLcm, parseColl,
   mergeBB, bbox, xboxVerts, xboxInstances,
   SI_OPS, SI_CAT, SI_PROP, siProp, SI_ARGN, swa,
   SI_SKIP, SI_L0, SI_L1, SI_L2, siLevel, siParseArgs,
