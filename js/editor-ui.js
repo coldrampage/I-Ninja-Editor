@@ -3,16 +3,16 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js?v=step24-class-tint';
+import { EC } from './editor-core.js?v=step26-tint-recognise';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step24-class-tint';
-import { installModelEditor } from './models-panel.js?v=step24-class-tint';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step26-tint-recognise';
+import { installModelEditor } from './models-panel.js?v=step26-tint-recognise';
 import { installScriptEditor } from './script-editor.js';
 import { installTexturePanel } from './textures-panel.js';
 import { installTintUi } from './class-tint.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step24-class-tint';
-import { installPrefabManager } from './prefabs.js?v=step24-class-tint';
+import { installEntityEditor } from './entity-editor.js?v=step26-tint-recognise';
+import { installPrefabManager } from './prefabs.js?v=step26-tint-recognise';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -262,7 +262,7 @@ const entityEditor=installEntityEditor({
 edUpdate=entityEditor.update;
 rec=entityEditor.rec;
 ground=entityEditor.ground;
-const tintUi=installTintUi({Viewer,getProject:()=>PRJ,wadOf,rec:q=>rec(q),onChange:()=>{}});
+const tintUi=installTintUi({Viewer,getProject:()=>PRJ,getWad,wadOf,rec:q=>rec(q),onChange:()=>{}});
 const oeu=edUpdate;edUpdate=function(){oeu();try{prefabManager.injectMoveControl()}catch(e){console.error(e)}try{tintUi.inject()}catch(e){console.error(e)}};
 edUpdate();
 // objects added from another level take their script info from the object they were copied from

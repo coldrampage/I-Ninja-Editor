@@ -1,6 +1,6 @@
 // Models panel: browsing parsed meshes, previewing and assigning 3D overlays.
 import { siWad, SiAn } from './vol-core.js';
-import { setEntityOverlayRefresh } from './viewer.js?v=step24-class-tint';
+import { setEntityOverlayRefresh } from './viewer.js?v=step26-tint-recognise';
 
 export function installModelEditor({Viewer, THREE, EC, getProject, getWad, wadOf, summary}) {
 // ---- models: browse the object meshes of any strat wad, assign one to an entity (or a class) so it is drawn in the 3D view; assignments are saved in the project
@@ -82,7 +82,7 @@ function snapInfo(w,name){let S=SNAPC[w];
 const snapOk=(si,q)=>si&&(!si.guard||(()=>{const v=(q.params&&q.params[si.guard.reg]||{}).v||0;return si.guard.nz?v!==0:v===0})());
 function groundY(p,cs){if(!cs.length)return null;const k=cs.length+'|'+p.join(',');if(k in SNAPY)return SNAPY[k];Viewer.root.updateMatrixWorld(true);const RC=new THREE.Raycaster();RC.set(Viewer.root.localToWorld(new Viewer.V3(p[0],p[1]+1,p[2])),new Viewer.V3(0,-1,0));RC.far=1001;const h=RC.intersectObjects(cs,false);return SNAPY[k]=h.length?Viewer.root.worldToLocal(h[0].point.clone()).y:null}
 
-function drawModels(){if(!mgrp)mgrp=new THREE.Group();if(mgrp.parent!==Viewer.root)Viewer.root.add(mgrp);for(const c of[...mgrp.children])mgrp.remove(c);mgrp.scale.z=1;/* root already mirrors Z (root.scale.z=mz); mirroring mgrp again put overlays at +z */const sh=Viewer.$('md_show');mgrp.visible=!sh||sh.checked;
+function drawModels(){if(!mgrp)mgrp=new THREE.Group();if(mgrp.parent!==Viewer.root)Viewer.root.add(mgrp);for(const c of[...mgrp.children]){mgrp.remove(c);if(c.userData&&c.userData.tintSrc&&c.material)c.material.dispose()}mgrp.scale.z=1;/* root already mirrors Z (root.scale.z=mz); mirroring mgrp again put overlays at +z */const sh=Viewer.$('md_show');mgrp.visible=!sh||sh.checked;
  const MS=getProject().models||{},au=Viewer.$('md_auto'),useAuto=!au||au.checked,sn=Viewer.$('md_snap'),useSnap=!sn||sn.checked;let csn=null;for(const q of Viewer.all){const w0=wadOf(q.L),M=MS[w0]||{};
   // an object added from another level still points into its SOURCE level's data (until the patched .vol is built), so its model is looked up there
   const ad=q.added&&w0&&((getProject().wads[w0]||{}).adds||[])[q.added-1],ws=ad&&ad.from.w,xl=!!ws&&ws!==w0,Ms=xl?(MS[ws]||{}):M;
@@ -91,7 +91,8 @@ function drawModels(){if(!mgrp)mgrp=new THREE.Group();if(mgrp.parent!==Viewer.ro
   const AL=modelsOf(a.w),AG=a.groupId&&AL.modelGroupById?.get(a.groupId),list=Array.isArray(a.parts)?a.parts.map(x=>geoOf(a.w,x.m,x.p)):AG?(AG.parts||[]).map(x=>geoOf(a.w,x.m,x.p)):a.g!==undefined?(typeof a.g==='string'?AL.filter(x=>x.modelGroup===a.g):AL.filter(x=>x.gid===a.g||x.legacyGid===a.g)).map(x=>geoOf(a.w,x.off,x.poff)):[geoOf(a.w,a.m,a.p)];
   const extra=(a.more||[]).flatMap(mm=>(mm.parts||[]).map(x=>geoOf(a.w,x.m,x.p)));let py=q.p[1];
   if(useSnap){const si=snapInfo(xl?ws:w0,q.n);if(snapOk(si,q)){csn=csn||(()=>{const r=[];Viewer.root.traverse(o=>{if(o.isMesh&&o.userData.kind==='coll')r.push(o)});return r})();const gy=groundY(q.p,csn);if(gy!==null)py=gy+si.off}}
-  for(const G of [...list,...extra]){if(!G)continue;const o=new THREE.Mesh(G.g,G.mat);o.position.set(q.p[0],py,q.p[2]);if(q.q){o.quaternion.set(q.q[0],q.q[1],q.q[2],q.q[3]);if(a.ry)o.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new Viewer.V3(0,1,0),a.ry*Math.PI/180))}mgrp.add(o)}}Viewer.need=true}
+  const ti=Viewer.tintInfo&&Viewer.tintInfo(q);/* colour tint preview: a recoloured clone of the shared material (approximation of Strat_SetColor) */
+  for(const G of [...list,...extra]){if(!G)continue;let mt=G.mat;if(ti){mt=G.mat.clone();mt.color.setRGB(ti.rgb[0]/255,ti.rgb[1]/255,ti.rgb[2]/255)}const o=new THREE.Mesh(G.g,mt);if(ti)o.userData.tintSrc=ti.src;o.position.set(q.p[0],py,q.p[2]);if(q.q){o.quaternion.set(q.q[0],q.q[1],q.q[2],q.q[3]);if(a.ry)o.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new Viewer.V3(0,1,0),a.ry*Math.PI/180))}mgrp.add(o)}}Viewer.need=true}
 // Keep model overlays in sync whenever the viewer rebuilds entity visuals. This is
 // especially important for a copied instance whose model assignment comes from a
 // different source level; the copy should appear immediately without reloading a VOL.
