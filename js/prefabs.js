@@ -9,8 +9,13 @@ const classReportSignature = report => JSON.stringify({
   bytes: report && report.bytes || 0,
   kinds: Object.entries(report && report.kinds || {}).sort(([a], [b]) => a.localeCompare(b)),
   strings: [...(report && report.strs || [])].sort(),
-  classes: [...(report && report.classes || [])].sort()
+  classes: [...(report && report.classes || [])].sort(),
+  fingerprint: report && report.fingerprint || null
 });
+const sameClassReport = (source, target) => !!source && !!target
+  && !String(source.fingerprint || '').startsWith('analysis-error:')
+  && !String(target.fingerprint || '').startsWith('analysis-error:')
+  && classReportSignature(source) === classReportSignature(target);
 
 export function sourceClassVariants(sourceReports, targetReports, rootName, sourceWad, targetNames = new Set(), sourceWadInfo = null) {
   const suffix = String(sourceWad || 'source').replace(/\.LCS$/i, '').replace(/[^A-Za-z0-9_]+/g, '_');
@@ -39,15 +44,14 @@ export function sourceClassVariants(sourceReports, targetReports, rootName, sour
       : [sourceClass].filter(Boolean);
     // groupOf() copies every class sharing a code block. If any member of that
     // block is missing or differs in the destination, the whole block must be
-    // imported. Alias every colliding sibling, even if that sibling's own
-    // report fingerprint happens to match: otherwise a harmless sibling such
-    // as Splash can abort the transplant when a different sibling varies.
+    // imported. The report fingerprint includes normalized bytecode, reachable
+    // pointer payloads and the class's model/mesh memberships, not just counts.
     const blockNeedsCopy = sourceClass && sourceWadInfo && members.some(member => {
       if (!targetNames.has(member.name)) return true;
       const sourceMember = sourceReports && sourceReports[member.name];
       const targetMember = targetReports && targetReports[member.name];
       return !sourceMember || !targetMember
-        || classReportSignature(sourceMember) !== classReportSignature(targetMember);
+        || !sameClassReport(sourceMember, targetMember);
     });
 
     if (blockNeedsCopy) {
@@ -59,16 +63,47 @@ export function sourceClassVariants(sourceReports, targetReports, rootName, sour
     } else if (!sourceClass) {
       // Compatibility path for callers without a parsed source class table.
       const dst = targetReports && targetReports[name];
-      if (dst && classReportSignature(src) !== classReportSignature(dst)) addAlias(name, true);
+      if (dst && !sameClassReport(src, dst)) addAlias(name, true);
     }
 
     const dst = targetReports && targetReports[name];
-    if (!sourceClass && dst && classReportSignature(src) !== classReportSignature(dst)) addAlias(name);
+    if (!sourceClass && dst && !sameClassReport(src, dst)) addAlias(name);
     for (const child of src.classes || []) visit(child);
   }
-  const root = sourceReports && sourceReports[rootName];
-  for (const child of root && root.classes || []) visit(child);
+  // The root is part of the transplant too. Previously only its dependencies
+  // were checked, so a same-named captain could silently retain the target's
+  // script/model and play the wrong animation. Check it exactly like every
+  // other class and import a private root whenever one of its dependencies
+  // needs a private variant (the existing root's relocations cannot be retargeted).
+  visit(rootName);
+  if (targetNames.has(rootName) && variants.size && !variants.has(rootName)) addAlias(rootName, true);
   return [...variants.values()];
+}
+
+function classNameUseIndex(source) {
+  if (!source || source.classNameUses) return source && source.classNameUses || {};
+  if (!source.A || !source.B) return {};
+  const wad = source.w || siWad(source.A, source.B);
+  if (!wad) return {};
+  const summaries = {}, parsed = analyseStrats(source.A, source.B, summaries), out = {};
+  (wad.classes || []).forEach((c, i) => {
+    const ci = parsed && parsed.keys && summaries[parsed.keys[i]], lines = [];
+    for (const h of ci && ci.handlers || []) for (const line of h.t || []) lines.push(line);
+    for (const sub of ci && ci.subs || []) for (const line of sub.t || []) lines.push(line);
+    for (const line of lines) {
+      // A private alias changes the runtime class name. Any literal class-name
+      // test or name lookup in the source scripts would continue asking for the
+      // old name, so the importer must not silently alias that class.
+      const calls = line.matchAll(/\bStrat_(IsClass|FindByName(?:InRadius)?|BroadcastName)\s*\(([^)]*)\)/g);
+      for (const call of calls) for (const match of call[2].matchAll(/"([^"]+)"/g)) {
+        const name = match[1];
+        if (!out[name]) out[name] = [];
+        if (!out[name].includes(c.name)) out[name].push(c.name);
+      }
+    }
+  });
+  source.classNameUses = out;
+  return out;
 }
 
 function classNameLookupIndex(source) {
@@ -171,6 +206,7 @@ export function installPrefabManager({
   getGround, getEntityRecord, ensureSourceArchives = async () => {}, updateEntity
 }) {
   let SP = {}, PFI = {}, SCx = {}, PFR = {}, LKC = {}, pfFor = null;
+  let lastPlacementWarnings = [];
   const lvOf = w => w.replace(/\.LCS$/i, '');
   const cloneTrigger = t => t && ({ ty: t.ty, box: t.box.slice(), poly: t.poly ? t.poly.slice() : null });
   const clonePath = path => Array.isArray(path) ? path.map(n => n.slice(0, 3).map(Number)) : null;
@@ -236,11 +272,20 @@ export function installPrefabManager({
       const sourceReports = SS.rep || (SS.rep = EC.classReports(SS.A, SS.B));
       const targetReports = EC.classReports(tg.A, tg.B);
       const variants = sourceClassVariants(sourceReports, targetReports, name, w, new Set(tc.keys()), siWad(SS.A, SS.B));
+      const nameUses = classNameUseIndex(SS);
+      for (const variant of variants) {
+        const owners = nameUses[variant.name] || [];
+        if (owners.length) throw 'cannot import a private ' + variant.name + ' variant: source scripts use the literal class name in ' + owners.join(', ') + ', and those references would not recognise the renamed class';
+      }
+      const rootVariant = variants.find(v => v.name === name);
       const aliases = Object.fromEntries(variants.map(v => [v.name, v.alias]));
       // A dependency variant already imported by an earlier prefab can be reused
       // by resolving its source class name to the stable private alias.
       const classHook = n => aliases[n] && tc.has(aliases[n]) ? tc.get(aliases[n]) : tc.get(n);
-      const names = [name, ...variants.filter(v => !v.alreadyImported).map(v => v.name)];
+      const names = [];
+      if (!tc.has(name) || (rootVariant && !rootVariant.alreadyImported)) names.push(name);
+      for (const v of variants) if (!v.alreadyImported && !names.includes(v.name)) names.push(v.name);
+      if (!names.length) return PFR[k] = { ok: true, classes: [], variants: variants.map(({name, alias}) => ({name, alias})), bytes: 0 };
       const r = EC.transplantClasses(tg.A, tg.B, SS, names, {
         res: EC.resResolver(SS, srcCtx(tw)).hook,
         cls: classHook, addRes: true, snd: sndPlan(tw)
@@ -253,13 +298,21 @@ export function installPrefabManager({
 
   // Ensure the target project's class list contains the required dependency.
   function ensureClass(tw, w, name) {
-    const t = getWad(tw);
-    if (t.cls.has(name)) return null;
-    const P = WS(tw);
+    const P = WS(tw), targetWad = getWad(tw), sourceWad = spLoad(w);
     if (P.classes.some(k => k.from.name === name && k.from.w === w)) return null;
+    // Lightweight embed/test hosts may not expose parsed class reports. In that
+    // case retain the legacy reuse path for an already-present class rather
+    // than attempting a transplant without source identity evidence.
+    if (targetWad && targetWad.cls.has(name) && (!sourceWad || !sourceWad.rep || !sourceWad.rep[name])) return null;
     const r = tryClass(tw, w, name);
     if (!r.ok) return r.why;
-    P.classes.push({ from: { w, name }, variants: r.variants || [] });
+    // No operation is needed when the same implementation and all of its
+    // dependencies are already present. A differing same-named implementation
+    // is recorded with its private alias so patchLcs can bind the new instance
+    // to that source-specific class instead of the destination's older one.
+    if ((r.classes || []).length || (r.variants || []).length) {
+      P.classes.push({ from: { w, name }, variants: r.variants || [] });
+    }
     return null;
   }
 
@@ -710,6 +763,7 @@ export function installPrefabManager({
       const ground = getGround();
       const at = ground(innerWidth / 2, innerHeight / 2, Viewer.sel ? Viewer.sel.p[1] : 0)
         || Viewer.ggame(Viewer.camera.position.clone().addScaledVector(Viewer.fwd(), 25));
+      lastPlacementWarnings = [];
       const start = Array.isArray(favorite.nodes) && favorite.nodes.length
         ? pushFavoriteGraph(tw, favorite, at)
         : (() => {
@@ -733,7 +787,11 @@ export function installPrefabManager({
       Viewer.inspect(Viewer.sel);
       updateEntity();
       Viewer.need = true;
-      showFavorite((recoveredCompanions ? 'Recovered ' + recoveredCompanions + ' missing name-based runtime companion(s); save the project to keep this favourite upgrade.\n' : '') + 'Placed "' + favorite.name + '" in ' + targetId + '.');
+      showFavorite((recoveredCompanions ? 'Recovered ' + recoveredCompanions + ' missing name-based runtime companion(s); save the project to keep this favourite upgrade.\n' : '')
+        + 'Placed "' + favorite.name + '" in ' + targetId + '.'
+        + (lastPlacementWarnings.length
+          ? '\n\nWaypoint adjustment needed before running this level:\n' + lastPlacementWarnings.join('\n')
+          : ''));
     } catch (error) {
       Viewer.$('ed_fav_info').textContent = 'Could not place favourite: ' + error;
     }
@@ -947,6 +1005,7 @@ export function installPrefabManager({
   }
 
   function pushFavoriteGraph(tw, favorite, at) {
+    lastPlacementWarnings = [];
     const nodes = favorite.nodes, P = WS(tw), base = P.adds.length;
     if (!Array.isArray(nodes) || !nodes.length || nodes.length > 24) throw 'invalid favourite linked-object graph';
 
@@ -982,32 +1041,41 @@ export function installPrefabManager({
         for (const a of targetProject.adds || []) {
           if (!a || !a.from || typeof a.from.w !== 'string') continue;
           const targetSource = srcEnt(a);
-          if (targetSource && targetSource.n === 'LogTurret') existing.push({ p: a.p.slice(), label: tw + ' added #' + (a.id ?? '?') });
+          if (targetSource && targetSource.n === 'LogTurret') existing.push({
+            p: a.p.slice(), label: tw + ' added #' + (a.id ?? '?')
+          });
         }
         if (existing.length > 1) {
           throw 'the LogTurret cutscene uses a level-wide camera broadcast and name lookup; only one LogTurret sequence can exist in a level. Remove duplicate LogTurret instances first';
         }
         if (existing.length === 1) {
-          const d2 = existing[0].p.reduce((sum, v, k) => sum + (v - expected[k]) ** 2, 0);
-          if (d2 <= 2.5 ** 2) { skipNamed.add(index); return; }
-          throw "a LogTurret already exists at " + existing[0].label + ", but it is not at this wall prefab's required second waypoint. Move or remove it before placing this LogTurretWall sequence";
+          const current = existing[0];
+          const d2 = current.p.reduce((sum, v, k) => sum + (v - expected[k]) ** 2, 0);
+          skipNamed.add(index);
+          if (d2 > 2.5 ** 2) {
+            const root = srcEnt({ from: nodes[0].from });
+            lastPlacementWarnings.push('Reused ' + current.label + ' instead of adding another LogTurret. '
+              + 'This prefab’s camera waypoint is not aligned with it; select the placed '
+              + (root && root.n || 'wall/totem') + ' and move the waypoint used by the Log Turret cutscene '
+              + 'onto the existing LogTurret before running the level.');
+          }
+          return;
         }
       } else if (existingProjectCopy) { skipNamed.add(index); return; }
       if (!target || !target.cls.has(src.n)) return;
       const srcSig = classReportSignature(source.rep && source.rep[src.n]);
       const dstSig = classReportSignature(target.rep && target.rep[src.n]);
-      if (srcSig !== dstSig) {
+      if (!sameClassReport(source.rep && source.rep[src.n], target.rep && target.rep[src.n])) {
         throw 'named runtime companion ' + src.n + ' already exists in the destination with a different script; the name-based lookup cannot safely distinguish the two versions';
       }
       if (target.ents.some(e => e.n === src.n && !deletedTargetInstances.has(e.i))) skipNamed.add(index);
     });
 
-    // LogTurretWall's break cutscene broadcasts to every LogTurretCamera and
-    // later finds a LogTurret by name near its second waypoint. These scripts
-    // are designed around one paired sequence per level; duplicates can steal
-    // the camera or leave the cutscene waiting forever. Refuse unsafe duplicate
-    // placement instead of creating a known softlock.
-    const singletonNames = new Set(['LogTurret', 'LogTurretWall']);
+    // Multiple LogTurretWall pieces (and LogTurretTotemPole props) can share
+    // the level's single LogTurret/camera sequence. Only the named turret is a
+    // level-wide singleton; rejecting repeated walls was stricter than the
+    // original levels, including 30-02, which contains two walls.
+    const singletonNames = new Set(['LogTurret']);
     const targetProject = (getProject().wads || {})[tw] || {};
     const targetMods = targetProject.mods || {}, deleted = new Set((targetProject.del || []).map(Number));
     const counts = new Map();
@@ -1026,7 +1094,7 @@ export function installPrefabManager({
       if (e && singletonNames.has(e.n)) counts.set(e.n, counts.get(e.n) + 1);
     });
     for (const name of singletonNames) if (counts.get(name) > 1) {
-      throw 'LogTurret and LogTurretWall use a shared, level-wide camera/cutscene sequence. Only one of each can safely exist in a level; remove the existing duplicate before placing another';
+      throw 'the LogTurret cutscene uses a shared, level-wide camera broadcast and name lookup; only one LogTurret can safely exist in a level. Remove the existing duplicate before placing another';
     }
 
     // Validate all source classes and dependencies before adding any prefab
@@ -1075,7 +1143,8 @@ export function installPrefabManager({
     P.adds.push(...recs);
     const namedCount = recs.filter(r => r.namedCompanion).length;
     const reusedCount = skipNamed.size;
-    Viewer.$('ed_sum').textContent = 'placed favourite graph: ' + recs.length + ' object(s)' + (namedCount ? ', including ' + namedCount + ' named runtime companion(s)' : '') + (reusedCount ? '; reused ' + reusedCount + ' existing named companion(s)' : '');
+    Viewer.$('ed_sum').textContent = 'placed favourite graph: ' + recs.length + ' object(s)' + (namedCount ? ', including ' + namedCount + ' named runtime companion(s)' : '') + (reusedCount ? '; reused ' + reusedCount + ' existing named companion(s)' : '')
+      + (lastPlacementWarnings.length ? '; waypoint adjustment required before running' : '');
     return base;
   }
 

@@ -284,7 +284,7 @@ class SiAn{
    if(mn==='mov'&&f==='rr')st[i.a]=R(i.c);
    else if(mn==='mov'&&f==='ri8')st[i.a]=['i',s8(i.c)];
    else if(mn==='mov'&&f==='ri32'){const v=i.ext[0];
-    if(w.rel.has(i.off+4)){let s=siCstr(A,v);s=(s&&s.length>1&&siPrint(s))?s:null;st[i.a]=this.cls.has(v)?['c',this.cls.get(v)]:(s?['s',s]:['p',v])}
+    if(w.rel.has(i.off+4)){let s=siCstr(A,v);s=(s&&s.length>1&&siPrint(s))?s:null;if(s){let hasReloc=false;for(let p=v&~3;p<=v+s.length;p+=4)if(w.rel.has(p)){hasReloc=true;break}if(hasReloc)s=null}st[i.a]=this.cls.has(v)?['c',this.cls.get(v)]:(s?['s',s]:['p',v])}
     else st[i.a]=['i',v]}
    else if(mn==='fmov')st[i.a]=['f',i.c*0.125];
    else if(mn==='li2'||mn==='li3'){const rr=[i.a,i.b,i.c];i.ext.forEach((v,k)=>{if(k<3)st[rr[k]]=['i',v]})}

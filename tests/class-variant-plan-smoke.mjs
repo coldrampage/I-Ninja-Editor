@@ -58,3 +58,26 @@ assert.deepEqual(groupedVariants.map(v => v.name), [
 assert.ok(groupedVariants.some(v => v.name === 'Splash'),
   'identical-report Splash sibling must be aliased because its whole code block is copied with variant helpers');
 console.log('PASS source class variants alias every colliding class in a resource-divergent shared code block');
+
+// When a same-named root already exists but one of its reachable dependencies
+// differs, the source root must be copied under a private name as well. Its
+// original class record cannot be retargeted to the private dependency without
+// changing the destination's existing instances.
+const rootCollisionSource = {
+  Root: { bytes: 40, kinds: { class: 1 }, strs: [], classes: ['Dependency'], fingerprint: 'root-src' },
+  Dependency: { bytes: 20, kinds: { material: 1 }, strs: [], classes: [], fingerprint: 'dep-src' }
+};
+const rootCollisionTarget = {
+  Root: { bytes: 40, kinds: { class: 1 }, strs: [], classes: ['Dependency'], fingerprint: 'root-dst' },
+  Dependency: { bytes: 20, kinds: { material: 1 }, strs: [], classes: [], fingerprint: 'dep-dst' }
+};
+const rootCollisionWad = {
+  classes: [{ name: 'Root', off: 0 }, { name: 'Dependency', off: 0x2c }],
+  U: offset => offset < 0x2c ? 0x100 : 0x200
+};
+const rootCollision = sourceClassVariants(
+  rootCollisionSource, rootCollisionTarget, 'Root', '30-06.LCS', new Set(['Root', 'Dependency']), rootCollisionWad
+);
+assert.deepEqual(rootCollision.map(v => v.name), ['Root', 'Dependency']);
+assert.ok(rootCollision.every(v => v.alias.endsWith('__source_30_06')));
+console.log('PASS source root receives a private alias when same-named destination implementation/dependencies differ');

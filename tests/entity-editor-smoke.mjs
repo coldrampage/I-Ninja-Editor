@@ -104,12 +104,16 @@ assert.deepEqual(entity.path, [[9, 4, 9], [12, 5, 15], [12, 5, 15]], 'waypoint e
 editor.setPosition(entity, [9, 3, 10]);
 assert.deepEqual(entity.path, [[10, 5, 10], [13, 6, 16], [13, 6, 16]], 'waypoint edits stay attached when the entity is moved');
 
+project.wads['10-00.LCS'].mods[0].texts = { 128: { owner: 120, slot: 128, ownerKind: 'data', value: 'copy this string' } };
+project.wads['10-00.LCS'].mods[0].sounds = { 132: { owner: 132, slot: 132, off: 256 } };
 editor.copy();
 editor.paste([10, 2, 11]);
 assert.equal(project.wads['10-00.LCS'].adds.length, 1, 'paste should create a project-added instance');
 assert.deepEqual(project.wads['10-00.LCS'].adds[0].p, [10, 2, 11], 'paste should preserve the requested placement');
 assert.deepEqual(project.wads['10-00.LCS'].adds[0].pathMap, [0, 1, 1], 'copy/paste preserves waypoint source-node templates');
 assert.equal(project.wads['10-00.LCS'].adds[0].trigger.ty, 4, 'copy/paste preserves the selected trigger override');
+assert.equal(project.wads['10-00.LCS'].adds[0].texts[128].value, 'copy this string', 'copy/paste preserves editable linked text overrides');
+assert.equal(project.wads['10-00.LCS'].adds[0].sounds[132].off, 256, 'copy/paste preserves editable sound-bank overrides');
 assert.deepEqual(project.wads['10-00.LCS'].adds[0].path, [[1, 2, 0], [4, 3, 6], [4, 3, 6]], 'copy/paste preserves waypoint path overrides');
 assert.equal(Viewer.sel.i, 1, 'paste should select the newly created instance');
 assert.deepEqual(editor.ground(600, 400, 2), [0, 0, 0], 'ground projection should remain available to the prefab-placement UI');
@@ -126,5 +130,6 @@ console.log('PASS trigger overrides are saved on the selected entity and remain 
 console.log('PASS waypoint overrides are relative to the entity and remain attached after movement');
 console.log('PASS entity editor installs viewport trigger and waypoint overlays and copy/paste retains both settings');
 console.log('PASS entity copy/paste creates and selects a project-added instance');
+console.log('PASS entity copy/paste preserves linked text and sound overrides');
 console.log('PASS ground projection remains exposed to the prefab placement control');
 console.log('PASS link-pick and entity keyboard handlers install without global entity state');

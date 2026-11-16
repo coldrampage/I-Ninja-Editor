@@ -3,16 +3,16 @@
 import {
   parseVol, readWad, r2, siWad, instances, fixups
 } from './vol-core.js';
-import { EC } from './editor-core.js?v=step28-display-modes';
+import { EC } from './editor-core.js?v=step32-register-links';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step28-display-modes';
-import { installModelEditor } from './models-panel.js?v=step28-display-modes';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step30-turret-waypoint-reuse';
+import { installModelEditor } from './models-panel.js?v=step30-turret-waypoint-reuse';
 import { installScriptEditor } from './script-editor.js';
 import { installTexturePanel } from './textures-panel.js';
 import { installTintUi } from './class-tint.js';
 import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step28-display-modes';
-import { installPrefabManager } from './prefabs.js?v=step28-display-modes';
+import { installEntityEditor } from './entity-editor.js?v=step32-register-links';
+import { installPrefabManager } from './prefabs.js?v=step30-turret-waypoint-reuse';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -175,7 +175,7 @@ function put(e,m){const B=base(e),d=m.d||[0,0,0],dy=m.dy||0,dp=m.dp||0,dr=m.dr||
  if(e.pathbox&&e.path&&e.path.length>=2){const a=e.path[0],b=e.path[1];e.b=[0,1,2].map(k=>Math.min(a[k],b[k])).concat([0,1,2].map(k=>Math.max(a[k],b[k])));}
  e.r=B.r+dy;if(B.q){const g2=x=>x/4096*2*Math.PI,ay=g2(dy),ap=g2(dp),ar=g2(dr);e.q=qm(qm([0,Math.sin(ay/2),0,Math.cos(ay/2)],B.q),qm([Math.sin(ap/2),0,0,Math.cos(ap/2)],[0,0,Math.sin(ar/2),Math.cos(ar/2)]))}
  e.params=e.params.map((p,k)=>m.regs&&m.regs[k]!==undefined&&!p.s?{...p,v:m.regs[k]>>>0}:{...p,v:B.pv[k]})}
-const unzero=m=>m.d.some(x=>x)||m.dy||m.dp||m.dr||Object.keys(m.regs).length||(m.lk&&m.lk.length)||!!m.trigger||!!m.path;
+const unzero=m=>m.d.some(x=>x)||m.dy||m.dp||m.dr||Object.keys(m.regs||{}).length||(m.lk&&m.lk.length)||Object.keys(m.texts||{}).length||Object.keys(m.sounds||{}).length||!!m.trigger||!!m.path;
 // Shared project status and removed-entity restoration UI. These stayed in the
 // coordinator when entity editing moved into entity-editor.js because Models
 // and Entity Editor both use them.

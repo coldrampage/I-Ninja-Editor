@@ -1,5 +1,5 @@
 import { installTriggerEditor } from './trigger-editor.js?v=step16-cylinder-resize';
-import { installPathEditor } from './path-editor.js?v=step28-display-modes';
+import { installPathEditor } from './path-editor.js?v=step30-turret-waypoint-reuse';
 // Entity inspector, transforms, register editing, link reassignment and entity copy/paste.
 // All application state and cross-feature operations are injected by the coordinator.
 export function installEntityEditor({
@@ -11,6 +11,61 @@ export function installEntityEditor({
   let mouse = { x: 0, y: 0 };
   let linkPick = null;
   let regOpen = false;
+  const dataCtxCache = new WeakMap();
+  const LANG = ['English', 'French', 'German', 'Spanish', 'Italian'];
+  const LANG_CODE = { eng: 'English', fre: 'French', fra: 'French', ger: 'German', deu: 'German', spa: 'Spanish', ita: 'Italian' };
+
+  function dataContext(w) {
+    const g = getWad(w);
+    if (!g || !g.A || !g.B) return null;
+    let c = dataCtxCache.get(g);
+    if (c) return c;
+    try {
+      const S = EC.SrcCtx(g.A, g.B), sounds = [];
+      for (const [off, type] of S.res) if (type === 0x115 && S.w.rel.has(off)) {
+        const bankOff = S.U(off), bank = EC.parseBank(g.A, bankOff), info = EC.bankInfo(g.A, bankOff);
+        if (S.res.get(bankOff) === 0x113 && bank && info && (info.kind === 'WAVE' || info.kind === 'WAVS')) sounds.push({ off, bankOff, name: bank.name || ('sound @0x' + bankOff.toString(16)), kind: info.kind });
+      }
+      sounds.sort((a, b) => a.name.localeCompare(b.name));
+      c = { S, sounds }; dataCtxCache.set(g, c); return c;
+    } catch (_) { return null; }
+  }
+  function readText(S, off) {
+    if (!Number.isInteger(off) || off < 1 || off >= S.A.length) return null;
+    let end = off; while (end < S.A.length && end - off <= 4096 && S.A[end] !== 0) end++;
+    if (end >= S.A.length || end - off > 4096) return null;
+    try { return new TextDecoder('utf-8').decode(S.A.subarray(off, end)); }
+    catch (_) { return String.fromCharCode(...S.A.subarray(off, end)); }
+  }
+  function languageFor(name, index) {
+    const m = /_([a-z]{3})_/i.exec(name || '');
+    return m && LANG_CODE[m[1].toLowerCase()] || LANG[index] || ('Language ' + (index + 1));
+  }
+  function localisedTable(ctx, baseOff) {
+    const S = ctx && ctx.S, U = S && S.U;
+    if (!S || !Number.isInteger(baseOff) || baseOff < 0 || baseOff + 5 * 8 > S.A.length) return null;
+    const entries = [];
+    for (let i = 0; i < 5; i++) {
+      const textSlot = baseOff + i * 8;
+      if (!S.w.rel.has(textSlot)) return null;
+      const textOff = U(textSlot), text = readText(S, textOff);
+      if (text === null || !text.trim()) return null;
+      const audioField = textSlot + 4, audioHandle = U(audioField);
+      let audioOff = null, audioBankOff = null, audioName = null, audioKind = null;
+      if (audioHandle) {
+        if (!S.w.rel.has(audioField) || !S.w.rel.has(audioHandle) || S.res.get(audioHandle) !== 0x115) return null;
+        audioBankOff = U(audioHandle);
+        if (S.res.get(audioBankOff) !== 0x113) return null;
+        const b = EC.parseBank(S.A, audioBankOff), bi = EC.bankInfo(S.A, audioBankOff);
+        if (!b || !bi || !['WAVE', 'WAVS'].includes(bi.kind)) return null;
+        audioOff = audioHandle; audioName = b.name; audioKind = bi.kind;
+      }
+      entries.push({ index: i, lang: languageFor(audioName, i), textSlot, textOff, text, audioSlot: audioHandle ? audioField : null, audioOff, audioBankOff, audioName, audioKind });
+    }
+    return entries.length === 5 ? entries : null;
+  }
+  function floatFromBits(v) { const b = new ArrayBuffer(4), d = new DataView(b); d.setUint32(0, v >>> 0, true); return d.getFloat32(0, true); }
+  function floatToBits(v) { const b = new ArrayBuffer(4), d = new DataView(b); d.setFloat32(0, +v, true); return d.getUint32(0, true); }
 
   const ent = q => {
     const lv = Viewer.D.find(l => l.id === q.L);
@@ -24,7 +79,7 @@ export function installEntityEditor({
     if (!e || !w) return null;
     const P = WS(w);
     if (e.added) return { e, w, add: P.adds[e.added - 1] };
-    const m = P.mods[e.i] || (P.mods[e.i] = { d: [0, 0, 0], dy: 0, dp: 0, dr: 0, regs: {} });
+    const m = P.mods[e.i] || (P.mods[e.i] = { d: [0, 0, 0], dy: 0, dp: 0, dr: 0, regs: {}, texts: {}, sounds: {} });
     return { e, w, m };
   }
 
@@ -70,9 +125,19 @@ export function installEntityEditor({
     redo(R);
   }
   function setReg(R, k, v) {
-    (R.add || R.m).regs[k] = v >>> 0;
+    const H = R.add || R.m; H.regs = H.regs || {}; H.regs[k] = v >>> 0;
     redo(R);
   }
+  function setText(R, owner, slot, value, ownerKind = 'data') {
+    const H = R.add || R.m; H.texts = H.texts || {}; H.texts[slot] = { owner, slot, ownerKind, value: String(value) };
+    summary();
+  }
+  function resetText(R, slot) { const H = R.add || R.m; if (H.texts) delete H.texts[slot]; redo(R); }
+  function setSound(R, owner, slot, off) {
+    const H = R.add || R.m; H.sounds = H.sounds || {}; H.sounds[slot] = { owner, slot, off: +off };
+    summary();
+  }
+  function resetSound(R, slot) { const H = R.add || R.m; if (H.sounds) delete H.sounds[slot]; redo(R); }
   function setTrigger(R, trigger) {
     const H = R.add || R.m;
     if (trigger) H.trigger = { ty: trigger.ty, box: trigger.box.slice(), poly: trigger.poly ? trigger.poly.slice() : null };
@@ -121,18 +186,64 @@ export function installEntityEditor({
       return;
     }
     const e = R.e, f = (id, v, st) => '<input type=number id=' + id + ' value="' + v + '" step=' + st + ' style="width:62px">';
+    // Resolve register pointers against the source wad. A small, validated
+    // five-language record (text pointer + optional sound-bank pointer) is
+    // presented as editable linked data rather than an opaque address.
+    const source = R.add ? R.add.from : { w: R.w, i: e.i };
+    const ctx = source && dataContext(source.w);
+    const sourceInst = ctx && ctx.S.w.instances[source.i];
+    const H = R.add || R.m, textEdits = H.texts || {}, soundEdits = H.sounds || {};
+    const linkedTables = new Map(), directStrings = new Map();
+    if (ctx && sourceInst) for (let k = 0; k < e.params.length; k++) {
+      const slot = sourceInst.init + 4 * k;
+      if (!ctx.S.w.rel.has(slot)) continue;
+      const ptr = ctx.S.U(slot), table = localisedTable(ctx, ptr);
+      if (table) linkedTables.set(k, { owner: ptr, entries: table });
+      else if (e.params[k].s) directStrings.set(k, { owner: sourceInst.init, ownerKind: 'init', slot, text: e.params[k].s });
+    }
+    const textControl = (owner, slot, value, key) => {
+      const edit = textEdits[slot], current = edit && typeof edit === 'object' ? edit.value : (edit === undefined ? value : edit);
+      return '<div class=regdata-row><label>' + Viewer.esc(key) + '</label><textarea rows=2 data-text-slot="' + slot + '" data-text-owner="' + owner + '">' + Viewer.esc(current == null ? '' : current) + '</textarea>'
+        + (edit !== undefined ? ' <button data-text-reset="' + slot + '">reset</button>' : '') + '</div>';
+    };
+    const soundControl = (owner, slot, currentOff, kind, key) => {
+      if (currentOff == null) return '<div class=regdata-row><label>' + Viewer.esc(key) + '</label><span class=h>no sound link</span></div>';
+      const edit = soundEdits[slot], selected = edit && typeof edit === 'object' ? edit.off : (edit === undefined ? currentOff : edit);
+      const options = (ctx.sounds || []).filter(b => b.kind === kind).map(b => '<option value="' + b.off + '"' + (b.off === selected ? ' selected' : '') + '>' + Viewer.esc(b.name) + '</option>').join('');
+      return '<div class=regdata-row><label>' + Viewer.esc(key) + '</label><select data-sound-slot="' + slot + '" data-sound-owner="' + owner + '">' + options + '</select>'
+        + (edit !== undefined ? ' <button data-sound-reset="' + slot + '">reset</button>' : '') + '<div class=h>' + Viewer.esc(kind + ' bank') + '</div></div>';
+    };
+    const dataRegisterHtml = (k, meta) => '<details class=regdata><summary>↗ linked text/audio data · 5 languages</summary>' + meta.entries.map(item => {
+      const text = textControl(meta.owner, item.textSlot, item.text, item.lang + ' text');
+      const audio = item.audioSlot == null ? '<div class=regdata-row><label>' + Viewer.esc(item.lang + ' audio') + '</label><span class=h>no audio pointer</span></div>' : soundControl(meta.owner, item.audioSlot, item.audioOff, item.audioKind, item.lang + ' audio');
+      return '<div class=regdata-lang><b>' + Viewer.esc(item.lang) + '</b>' + text + audio + '</div>';
+    }).join('') + '</details>';
+    const regHtml = e.params.map((p, k) => {
+      const lq = !p.s && SI && SI.l.find(a => a[0] == k);
+      if (lq) {
+        const ov = (H.lk || []).some(l => l[0] == k) || (H.regs || {})[k] !== undefined;
+        const on = linkPick && linkPick.L === Viewer.sel.L && linkPick.i === e.i && linkPick.k == k;
+        return '<div>r' + k + ' <span class=h>' + Viewer.esc(Viewer.regTxt(Viewer.sel, SI, k)) + '</span> <button data-lk=' + k + (on ? ' style="background:#fa0"' : '') + '>' + (on ? 'click target...' : 'link...') + '</button>' + (ov ? ' <button data-lkr=' + k + ' title="back to what the copied/original object had">reset</button>' : '') + '</div>';
+      }
+      if (linkedTables.has(k)) {
+        const meta = linkedTables.get(k);
+        return '<div class=reglink>r' + k + ' <span class=h>↗ ' + (meta.entries.some(x => x.audioOff != null) ? 'localised dialogue / audio' : 'localised text') + ' table</span></div>' + dataRegisterHtml(k, meta);
+      }
+      if (directStrings.has(k)) {
+        const d = directStrings.get(k), edit = textEdits[d.slot], current = edit && typeof edit === 'object' ? edit.value : (edit === undefined ? d.text : edit);
+        return '<div class=reglink>r' + k + ' <span class=h>↗ string</span> <input type=text data-text-slot="' + d.slot + '" data-text-owner="' + d.owner + '" data-text-kind="' + d.ownerKind + '" value="' + Viewer.esc(current == null ? '' : current).replace(/"/g, '&quot;') + '" style="width:260px">' + (edit !== undefined ? ' <button data-text-reset="' + d.slot + '">reset</button>' : '') + '</div>';
+      }
+      const role = SI && SI.c && SI.c.roles && SI.c.roles[k] || {}, raw = (H.regs || {})[k] === undefined ? p.v : (H.regs || {})[k];
+      if (role.ty === 'f') {
+        const value = floatFromBits(raw), shown = Number.isFinite(value) ? +value.toPrecision(7) : 0;
+        return '<div>r' + k + ' <input type=number data-float-k="' + k + '" value="' + shown + '" step="0.01" style="width:100px"> <span class=h>' + Viewer.esc(role.note || 'float') + '</span></div>';
+      }
+      return '<div>r' + k + ' ' + (p.s ? '<span class=h>"' + Viewer.esc(p.s) + '"</span>' : '<input type=number id=ed_r' + k + ' data-k=' + k + ' value=' + (raw >>> 0) + ' style="width:100px">') + '</div>';
+    }).join('');
     S.innerHTML = '<b style="color:' + Viewer.col(e.n) + '">' + Viewer.esc(e.n) + '</b> <span class=h>' + Viewer.sel.L + ' #' + e.i + (e.added ? ' (new, copy of #' + R.add.from.i + ')' : '') + '</span><br>X ' + f('ed_x', e.p[0], .5) + ' Y ' + f('ed_y', e.p[1], .5) + ' Z ' + f('ed_z', e.p[2], .5) + '<br>yaw ' + f('ed_w', +(e.r / 4096 * 360).toFixed(1), 5) + '&deg;<br>pitch ' + f('ed_pt', +(((R.add || R.m).dp || 0) / 4096 * 360).toFixed(1), 5) + '&deg; roll ' + f('ed_rl', +(((R.add || R.m).dr || 0) / 4096 * 360).toFixed(1), 5) + '&deg; <span class=h>(change from original)</span><br>step <input type=number id=ed_st value=' + (S.dataset.st || 1) + ' style="width:48px"><br>'
       + ['-X', '+X', '-Y', '+Y', '-Z', '+Z'].map(t => '<button data-n="' + t + '">' + t + '</button>').join('') + ' <button data-n="L">&#8634;15</button><button data-n="R">&#8635;15</button><br><button id=ed_cp>copy</button> <button id=ed_ps>paste</button> ' + '<button id=ed_del>' + (e.added ? 'delete' : 'remove') + '</button>'
       + '<div class=h>hold G + move mouse to drag on the ground plane; Ctrl+C / Ctrl+V copy and paste at the cursor</div>'
-      + (e.params.some(p => !p.s) ? '<details' + (regOpen || linkPick ? ' open' : '') + '><summary>registers</summary>' + e.params.map((p, k) => {
-        const lq = !p.s && SI && SI.l.find(a => a[0] == k);
-        if (lq) {
-          const H = R.add || R.m, ov = (H.lk || []).some(l => l[0] == k) || H.regs[k] !== undefined;
-          const on = linkPick && linkPick.L === Viewer.sel.L && linkPick.i === e.i && linkPick.k == k;
-          return '<div>r' + k + ' <span class=h>' + Viewer.esc(Viewer.regTxt(Viewer.sel, SI, k)) + '</span> <button data-lk=' + k + (on ? ' style="background:#fa0"' : '') + '>' + (on ? 'click target...' : 'link...') + '</button>' + (ov ? ' <button data-lkr=' + k + ' title="back to what the copied/original object had">reset</button>' : '') + '</div>';
-        }
-        return '<div>r' + k + ' ' + (p.s ? '<span class=h>"' + Viewer.esc(p.s) + '"</span>' : '<input type=number id=ed_r' + k + ' data-k=' + k + ' value=' + (p.v >>> 0) + ' style="width:100px">') + '</div>';
-      }).join('') + '<div class=h>raw 32-bit values (floats are stored as their bit pattern). A register that links to another object has a link... button: press it, then click the object to link to (same level; Esc cancels).</div></details>' : '');
+      + (e.params.length ? '<details' + (regOpen || linkPick ? ' open' : '') + '><summary>registers</summary>' + regHtml + '<div class=h>Pointer-backed text/audio records are shown as editable links. Float-typed registers display their numeric value; other numeric registers remain raw 32-bit values. Linked object registers have a link... button: press it, then click the object to link to (same level; Esc cancels).</div></details>' : '');
 
     triggerEditor.render(S, Viewer.sel, R);
     pathEditor.render(S, Viewer.sel, R);
@@ -150,6 +261,11 @@ export function installEntityEditor({
       nudge(...v, 0);
     });
     S.querySelectorAll('input[data-k]').forEach(i => i.onchange = () => setReg(R, +i.dataset.k, +i.value));
+    S.querySelectorAll('input[data-float-k]').forEach(i => i.onchange = () => setReg(R, +i.dataset.floatK, floatToBits(+i.value)));
+    S.querySelectorAll('[data-text-slot]').forEach(i => { const commit = () => setText(R, +i.dataset.textOwner, +i.dataset.textSlot, i.value, i.dataset.textKind || 'data'); i.onchange = commit; });
+    S.querySelectorAll('select[data-sound-slot]').forEach(i => i.onchange = () => setSound(R, +i.dataset.soundOwner, +i.dataset.soundSlot, +i.value));
+    S.querySelectorAll('button[data-text-reset]').forEach(b => b.onclick = () => resetText(R, +b.dataset.textReset));
+    S.querySelectorAll('button[data-sound-reset]').forEach(b => b.onclick = () => resetSound(R, +b.dataset.soundReset));
     S.querySelectorAll('button[data-lk]').forEach(b => b.onclick = () => startLink(+b.dataset.lk));
     S.querySelectorAll('button[data-lkr]').forEach(b => b.onclick = () => resetLink(R, +b.dataset.lkr));
     const dt = S.querySelector('details');
@@ -248,9 +364,10 @@ export function installEntityEditor({
     const R = rec(Viewer.sel);
     if (!R) return;
     const H = R.add || R.m;
+    const cloneEdits = edits => Object.fromEntries(Object.entries(edits || {}).map(([k, v]) => [k, v && typeof v === 'object' ? { ...v } : v]));
     clip = R.add
-      ? { from: { ...R.add.from }, dy: R.add.dy || 0, dp: R.add.dp || 0, dr: R.add.dr || 0, regs: { ...R.add.regs }, trigger: R.add.trigger && { ty: R.add.trigger.ty, box: R.add.trigger.box.slice(), poly: R.add.trigger.poly && R.add.trigger.poly.slice() }, path: R.add.path && R.add.path.map(n => n.slice()), pathMap: R.add.pathMap && R.add.pathMap.slice() }
-      : { from: { w: R.w, i: R.e.i }, dy: R.m.dy || 0, dp: R.m.dp || 0, dr: R.m.dr || 0, regs: { ...R.m.regs }, trigger: R.m.trigger && { ty: R.m.trigger.ty, box: R.m.trigger.box.slice(), poly: R.m.trigger.poly && R.m.trigger.poly.slice() }, path: R.m.path && R.m.path.map(n => n.slice()), pathMap: R.m.pathMap && R.m.pathMap.slice() };
+      ? { from: { ...R.add.from }, dy: R.add.dy || 0, dp: R.add.dp || 0, dr: R.add.dr || 0, regs: { ...R.add.regs }, texts: cloneEdits(R.add.texts), sounds: cloneEdits(R.add.sounds), trigger: R.add.trigger && { ty: R.add.trigger.ty, box: R.add.trigger.box.slice(), poly: R.add.trigger.poly && R.add.trigger.poly.slice() }, path: R.add.path && R.add.path.map(n => n.slice()), pathMap: R.add.pathMap && R.add.pathMap.slice() }
+      : { from: { w: R.w, i: R.e.i }, dy: R.m.dy || 0, dp: R.m.dp || 0, dr: R.m.dr || 0, regs: { ...R.m.regs }, texts: cloneEdits(R.m.texts), sounds: cloneEdits(R.m.sounds), trigger: R.m.trigger && { ty: R.m.trigger.ty, box: R.m.trigger.box.slice(), poly: R.m.trigger.poly && R.m.trigger.poly.slice() }, path: R.m.path && R.m.path.map(n => n.slice()), pathMap: R.m.pathMap && R.m.pathMap.slice() };
     clip.lk = (H.lk || []).map(l => l.slice());
     clip.at = R.w;
     Viewer.$('ed_sum').textContent = 'copied ' + R.e.n;
@@ -270,7 +387,8 @@ export function installEntityEditor({
       const sp = Viewer.sel.p, g = ground(mouse.x, mouse.y, Viewer.sel.p[1]);
       return g || [sp[0] + 3, sp[1], sp[2] + 3];
     })();
-    const a = { from: { ...clip.from }, p: p.map(r3), dy: clip.dy, dp: clip.dp || 0, dr: clip.dr || 0, regs: { ...clip.regs }, trigger: clip.trigger && { ty: clip.trigger.ty, box: clip.trigger.box.slice(), poly: clip.trigger.poly && clip.trigger.poly.slice() }, path: clip.path && clip.path.map(n => n.slice()), pathMap: clip.pathMap && clip.pathMap.slice() };
+    const cloneEdits = edits => Object.fromEntries(Object.entries(edits || {}).map(([k, v]) => [k, v && typeof v === 'object' ? { ...v } : v]));
+    const a = { from: { ...clip.from }, p: p.map(r3), dy: clip.dy, dp: clip.dp || 0, dr: clip.dr || 0, regs: { ...clip.regs }, texts: cloneEdits(clip.texts), sounds: cloneEdits(clip.sounds), trigger: clip.trigger && { ty: clip.trigger.ty, box: clip.trigger.box.slice(), poly: clip.trigger.poly && clip.trigger.poly.slice() }, path: clip.path && clip.path.map(n => n.slice()), pathMap: clip.pathMap && clip.pathMap.slice() };
     if (clip.at === w && clip.lk && clip.lk.length) a.lk = clip.lk.map(l => l.slice());
     else stripLinkRegs(a);
     // Cross-level clones require the source class and its dependencies in the target level.

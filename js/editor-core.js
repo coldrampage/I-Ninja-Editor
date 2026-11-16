@@ -45,6 +45,29 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
  const gshim={get A(){return A},rel,alloc,addRel,W:(o,v)=>W(o,v),U,newSpec:[],addRelTo:(arr,o)=>{if(!rel.has(o)){rel.add(o);arr.push(o)}},addSpec:(k,loc,rels)=>gshim.newSpec.push({kind:(0x80000000|k)>>>0,loc,rels})},gctx={};
  const gcopy=(sw,wn,v)=>{let g=gctx[wn];if(!g){const S=SrcCtx(sw.A,sw.B),T=SrcCtx(A0,B0);S.wadName=wn;g=gctx[wn]={S,res:resResolver(S,T).hook,memo:new Map()}}
   return copyGraph(g.S,gshim,[v],{res:g.res,cls:n=>{const o=clsByName(n);return o<0?null:o},snd:env&&env.snd},{addRes:true,memo:g.memo}).get(v)};
+ const writeTextSlot=(slot,value)=>{
+  if(!rel.has(slot)||slot<0||slot+4>A.length)throw'text link at @'+slot.toString(16)+' is not a relocated pointer';
+  const old=U(slot);if(old<1||old>=A.length)throw'text pointer at @'+slot.toString(16)+' has an invalid target';let end=old;while(end<A.length&&end-old<=4096&&A[end]!==0)end++;if(end>=A.length||end-old>4096)throw'text pointer at @'+slot.toString(16)+' does not target a bounded string';
+  const text=String(value);if(text.includes('\0'))throw'text cannot contain a NUL character';
+  const bytes=new TextEncoder().encode(text);if(bytes.length>4096)throw'text is too long ('+bytes.length+' UTF-8 bytes)';
+  const p=alloc(bytes.length+2,4);A[p]=0;A.set(bytes,p+1);A[p+1+bytes.length]=0;W(slot,p+1);addRel(slot);
+ };
+ const writeSoundSlot=(slot,off)=>{
+  if(!rel.has(slot)||slot<0||slot+4>A.length)throw'sound link at @'+slot.toString(16)+' is not a relocated pointer';
+  const registered=(imp[0x80000115]||[]).includes(off)||gshim.newSpec.some(x=>x.kind===0x80000115&&x.loc===off);
+  if(!registered||!rel.has(off)||off<0||off+4>A.length)throw'selected sound @'+Number(off).toString(16)+' is not a registered sound handle in '+wadName;
+  const bankOff=U(off),info=bankInfo(A,bankOff),oldHandle=U(slot),oldInfo=oldHandle>0&&oldHandle+4<=A.length&&rel.has(oldHandle)?bankInfo(A,U(oldHandle)):null;
+  if(!info||!['WAVE','WAVS'].includes(info.kind))throw'selected sound handle @'+Number(off).toString(16)+' does not point to a supported WAVE/WAVS bank';
+  if(oldInfo&&oldInfo.kind!==info.kind)throw'sound format mismatch: '+oldInfo.kind+' cannot be replaced with '+info.kind;
+  W(slot,off);addRel(slot);
+ };
+ const editValue=(x,key)=>x&&typeof x==='object'?x[key]:x;
+ const applyAddedDataEdits=(a,sw,same,sourceInit,targetInit)=>{
+  const g=gctx[a.from.w];
+  const targetSlot=edit=>{const owner=+edit.owner,sourceSlot=+edit.slot;if(edit.ownerKind==='init')return targetInit+(sourceSlot-sourceInit);const destOwner=g&&g.memo.has(owner)?g.memo.get(owner):(same?owner:null);if(destOwner===undefined||destOwner===null)throw'linked data block @'+owner.toString(16)+' was not copied with '+a.from.w+'; its text/audio link cannot be edited safely';return destOwner+(sourceSlot-owner)};
+  for(const[slot,edit]of Object.entries(a.texts||{})){const rec=edit&&typeof edit==='object'?{...edit,slot:+slot}:{owner:+slot,slot:+slot,value:edit};writeTextSlot(targetSlot(rec),rec.value);}
+  for(const[slot,edit]of Object.entries(a.sounds||{})){const rec=edit&&typeof edit==='object'?{...edit,slot:+slot}:{owner:+slot,slot:+slot,off:edit};const sourceOff=+rec.off;const targetOff=gcopy(sw,a.from.w,sourceOff);writeSoundSlot(targetSlot(rec),targetOff);}
+ };
  const moveShape=(sp,dd,seen)=>{if(!sp||seen.has(sp))return;seen.add(sp);const ty=U(sp)&0xffff,cnt=U(sp)>>>16,pp=U(sp+4);
   for(let k=0;k<3;k++){WF(sp+8+4*k,F(sp+8+4*k)+dd[k]);WF(sp+20+4*k,F(sp+20+4*k)+dd[k])}
   if((ty==5||ty==6)&&cnt>=3&&pp&&rel.has(sp+4)&&!seen.has(pp)){seen.add(pp);for(let v=0;v<cnt;v++)for(let k=0;k<3;k++)WF(pp+12*v+4*k,F(pp+12*v+4*k)+dd[k])}};
@@ -124,9 +147,15 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
   if(m.path){const pos=[F(o+0x10),F(o+0x14),F(o+0x18)];writePathOverride(o,m.path.map(n=>n.map((v,k)=>v+pos[k])),m.pathMap,true)}
   if(m.trigger)writeTriggerShape(o,m.trigger,[F(o+0x10),F(o+0x14),F(o+0x18)],U(o+0x34));
   rot(o,m.dy||0,m.dp||0,m.dr||0);
-  const rg=Object.entries(m.regs||{});if(rg.length){const cp=U(o+0x28),ni=d.getUint16(cp+0x18,true),old=U(o+0x2c),np=alloc(4*Math.max(ni,1));
+  const rg=Object.entries(m.regs||{}),textEntries=Object.entries(m.texts||{}),initTextEntries=textEntries.filter(([,x])=>x&&typeof x==='object'&&x.ownerKind==='init');
+  if(rg.length||initTextEntries.length){const cp=U(o+0x28),ni=d.getUint16(cp+0x18,true),old=U(o+0x2c),np=alloc(4*Math.max(ni,1));
    for(let r=0;r<ni;r++){W(np+4*r,U(old+4*r));if(rel.has(old+4*r))addRel(np+4*r)}W(o+0x2c,np);addRel(o+0x2c);
-   for(const[r,v]of rg){if(!(+r<ni))throw'register '+r+' out of range';rel.delete(np+4*r);W(np+4*r,v)}}}
+   for(const[r,v]of rg){if(!(+r<ni))throw'register '+r+' out of range';rel.delete(np+4*r);W(np+4*r,v)}
+   for(const[slot,edit]of initTextEntries){const rec=edit&&typeof edit==='object'?edit:{owner:old,slot:+slot,value:edit};const dst=np+(+slot-(+rec.owner));writeTextSlot(dst,rec.value)}
+  }
+  for(const[slot,edit]of textEntries)if(!(edit&&typeof edit==='object'&&edit.ownerKind==='init'))writeTextSlot(+slot,editValue(edit,'value'));
+  for(const[slot,edit]of Object.entries(m.sounds||{}))writeSoundSlot(+slot,+editValue(edit,'off'));
+ }
  // ---- 2) new instances: move the instance table (and link table) to the end of the block and append
  const adds=ops.adds||[];
  let lkChanged=false;
@@ -143,10 +172,19 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
    lkChanged=true}
   const idToIdx=new Map(adds.map((a,n)=>[a.id,nk+n]).filter(x=>x[0]!==undefined));
   adds.forEach((a,n)=>{const sw=a.from.w===wadName?{A:A0,B:B0}:srcWad(a.from.w);if(!sw)throw'prefab source '+a.from.w+' not found';
-   const same=a.from.w===wadName,sA=sw.A,sd=new DataView(sA.buffer,sA.byteOffset,sA.length),sU=o=>sd.getUint32(o,true),sF=o=>sd.getFloat32(o,true),sRel=same?imp.rel:fixups(sw.B).rel,
+   const same=a.from.w===wadName,sA=sw.A,sd=new DataView(sA.buffer,sA.byteOffset,sA.length),sU=o=>sd.getUint32(o,true),sF=o=>sd.getFloat32(o,true),sourceS=SrcCtx(sA,sw.B),sRel=same?imp.rel:fixups(sw.B).rel,
     sh=(fixups(sw.B)[0x8000010e]||[])[0];if(sh==null)throw'bad prefab source';
+   const editedOwners=new Set([...Object.values(a.texts||{}),...Object.values(a.sounds||{})].filter(x=>x&&typeof x==='object'&&x.ownerKind!=='init').map(x=>+x.owner));
+   const ownsEdit=v=>{if(!editedOwners.size)return false;const graph=dataClosure(sourceS,[v]);for(const owner of editedOwners)if(graph.objs.has(owner)&&graph.objs.get(owner).k==='data')return true;return false};
    const sIns=sU(sh+0x28),sLnk=sU(sh+0x2c),sNl=sd.getUint16(sh+0x32,true),so=sIns+a.from.i*INS,idx=nk+n,o=T+idx*INS;
-   const scp=sU(so+0x28),cname=cstrA(sA,sU(scp+4)),tcp=clsByName(cname);if(tcp<0)throw'class '+cname+' does not exist in '+wadName;
+   const scp=sU(so+0x28),cname=cstrA(sA,sU(scp+4));
+   // A source class can share its visible name with a different destination
+   // implementation (notably Rax/Kappa captain variants). Use the private root
+   // alias recorded by the class-import plan for newly copied instances.
+   const classAlias=(ops.classes||[]).filter(k=>k.from&&k.from.w===a.from.w)
+    .flatMap(k=>k.variants||[]).find(v=>v.name===cname);
+   const targetClassName=classAlias?classAlias.alias:cname,tcp=clsByName(targetClassName);
+   if(tcp<0)throw'class '+targetClassName+' does not exist in '+wadName;
    for(let w=0;w<INS;w+=4)W(o+w,sU(so+w));
    const dd=[0,1,2].map(k=>a.p[k]-sF(so+0x10+4*k));for(let k=0;k<3;k++)WF(o+0x10+4*k,a.p[k]);
    W(o+0x28,tcp);addRel(o+0x28);W(o+0x38,idx);
@@ -155,10 +193,11 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
    for(let r=0;r<ni;r++){const v=sU(sip+4*r);
     if(sRel.has(sip+4*r)){const s=siPrint(siCstr(sA,v));
      if(s!==null){const np=alloc(s.length+1,4);for(let c=0;c<s.length;c++)A[np+c]=s.charCodeAt(c);W(ip+4*r,np);addRel(ip+4*r)}
-     else if(same){W(ip+4*r,v);addRel(ip+4*r)}else{let n;try{n=gcopy(sw,a.from.w,v)}catch(x){throw'prefab '+cname+' register '+r+' points into its own level data that cannot be copied: '+x}W(ip+4*r,n);addRel(ip+4*r)}}
+     else if(same&&!ownsEdit(v)){W(ip+4*r,v);addRel(ip+4*r)}else{let n;try{n=gcopy(sw,a.from.w,v)}catch(x){throw'prefab '+cname+' register '+r+' points into its own level data that cannot be copied: '+x}W(ip+4*r,n);addRel(ip+4*r)}}
     else W(ip+4*r,v)}
    W(o+0x2c,ip);addRel(o+0x2c);
    for(const[r,v]of Object.entries(a.regs||{})){if(!(+r<ni))throw'register '+r+' out of range';rel.delete(ip+4*r);W(ip+4*r,v)}
+   applyAddedDataEdits(a,sw,same,sip,ip);
    const lkSet=new Set();   // registers rewired to other new instances (deep copy): a copied spawner links to its own copied children
    for(const[rg,cid]of(a.lk||[])){if(!(rg<ni))throw'link register '+rg+' out of range';const ci=idToIdx.get(cid);rel.delete(ip+4*rg);lkSet.add(rg);if(ci===undefined)W(ip+4*rg,0);else{W(ip+4*rg,ci);lk.push([idx,rg])}}
    for(let i=0;i<sNl;i++){const ow=sd.getUint16(sLnk+4*i,true),rg=sd.getUint16(sLnk+4*i+2,true);if(ow!==a.from.i||lkSet.has(rg))continue;
@@ -215,10 +254,66 @@ function patchLcs(A0,B0,ops,wadName,srcWad,env){
  return patchLcs0(A0,B0,ops,wadName,srcWad,env)}
 // ---- read-only dependency report for every class of a strat wad: follows the code the class can actually run (entry + its handlers + called subroutines) and classifies every pointer in it
 const KN={1:'texture',4:'level data',6:'material',7:'material',8:'skeleton/animation',0x20:'draw part',0x21:'mesh part',0x22:'mesh part',0x23:'vertex buffer',0x24:'mesh',0x113:'sound bank',0x115:'sound'};
-function classReports(A,B){const w=siWad(A,B);if(!w)return{};const az=new SiAn(w),imp=fixups(B),h=imp[0x8000010e][0],U=w.U,code=U(h+0x10),ncode=U(h+0x1c),cl0=U(h+0x14),clEnd=cl0+0x2c*w.classes.length,ins=U(h+0x28);
+const classReportCache=new WeakMap();
+function classReports(A,B){
+ if(A&&typeof A==='object'){const cached=classReportCache.get(A);if(cached&&cached.has(B))return cached.get(B)}
+ const w=siWad(A,B);if(!w)return{};
+ const az=new SiAn(w),imp=fixups(B),h=imp[0x8000010e][0],U=w.U,code=U(h+0x10),ncode=U(h+0x1c),cl0=U(h+0x14),clEnd=cl0+0x2c*w.classes.length,ins=U(h+0x28);
  const res=[];for(const k in imp){if(k==='rel'||+k===0x8000010e)continue;for(const o of imp[k])res.push([o,+k&0xffff])}res.sort((a,b)=>a[0]-b[0]);
- const resOf=v=>{let lo=0,hi=res.length-1,r=-1;while(lo<=hi){const m=(lo+hi)>>1;if(res[m][0]<=v){r=m;lo=m+1}else hi=m-1}return r>=0&&v-res[r][0]<0x400?res[r][1]:-1};
+ const resOf=v=>{let lo=0,hi=res.length-1,r=-1;while(lo<=hi){const m=(lo+hi)>>1;if(res[m][0]<=v){r=m;lo=m+1}else hi=m-1}return r>=0&&v-res[r][0]<0x400?r:-1};
  const byOff=new Map(w.classes.map(c=>[c.off,c.name])),order=w.classes.map((c,i)=>i).sort((a,b)=>w.classes[a].entry-w.classes[b].entry),lo={};let prev=0;for(const k of order){lo[k]=[prev,w.classes[k].entry];prev=w.classes[k].entry}
+ const S=SrcCtx(A,B),ri=ResIndex(S),blobCache=new Map(),hashText=text=>{let hh=2166136261;for(let i=0;i<text.length;i++){const ch=text.charCodeAt(i);hh^=ch&255;hh=Math.imul(hh,16777619);hh^=ch>>>8;hh=Math.imul(hh,16777619)}return(hh>>>0).toString(16).padStart(8,'0')};
+ const spanEnd=o=>{const e=S.next(o);return Math.max(o+1,Math.min(e==null?A.length:e,A.length))};
+ const blobDigest=(o,depth=0,stack=new Set())=>{
+  if(blobCache.has(o))return blobCache.get(o);
+  if(depth>10)return'deep';if(stack.has(o))return'cycle';
+  const end=spanEnd(o),size=end-o,nextStack=new Set(stack);nextStack.add(o);let hh=2166136261;
+  // Hash the complete payload while masking relocated words; their resolved
+  // targets are included as canonical edges below, rather than as file offsets.
+  for(let p=o;p<end;p++){
+   if((p&3)===0&&p+4<=end&&w.rel.has(p)){for(let k=0;k<4;k++){hh^=0;hh=Math.imul(hh,16777619)}p+=3;continue}
+   hh^=A[p];hh=Math.imul(hh,16777619);
+  }
+  const edges=[];for(let p=o;p+4<=end;p+=4)if(w.rel.has(p))edges.push((p-o)+':'+targetToken(U(p),depth+1,nextStack));
+  const digest=size+':'+(hh>>>0).toString(16)+':'+edges.join('|');blobCache.set(o,digest);return digest;
+ };
+ const targetToken=(v,depth=0,stack=new Set(),codeOrder=null)=>{
+  if(byOff.has(v))return'C:'+byOff.get(v);
+  if(v>=code&&v<code+4*ncode)return'CODE:'+(codeOrder&&codeOrder.has(v)?codeOrder.get(v):'external');
+  if(v>=cl0&&v<clEnd){const idx=Math.floor((v-cl0)/0x2c),c=w.classes[idx];return c?'CREC:'+c.name:'CREC'}
+  const str=S.str(v);if(str!==null)return'S:'+str;
+  const rr=resOf(v);if(rr>=0&&v<code){const [rOff,type]=res[rr];
+   if(type===0x113||type===0x115)return'R:'+type.toString(16)+':'+ri.key(rOff)+':'+(v-rOff);
+   return'R:'+type.toString(16)+':'+ri.key(rOff)+':'+(v-rOff)+':'+blobDigest(rOff,depth+1,stack);
+  }
+  if(depth>10)return'DEEP';
+  if(v>=0&&v<A.length)return'D:'+blobDigest(v,depth+1,stack);
+  return'OUT';
+ };
+ // parseModels already resolves script/model descriptor ownership. Include
+ // those model groups in the class identity so a same-named captain with a
+ // different boss mesh/material set cannot be mistaken for the target's model.
+ const modelByPart=new Map(),modelSigs=new Map();let modelAnalysisError=null;
+ try{
+  const modelData=parseModels(A,B);
+  for(const M of modelData)if(M.poff){if(!modelByPart.has(M.poff))modelByPart.set(M.poff,[]);modelByPart.get(M.poff).push(M)}
+  for(const g of modelData.modelGroups||[]){
+   const members=[];
+   for(const part of g.parts||[]){
+    const rows=modelByPart.get(part.p)||[],M=rows.find(x=>x.off===part.m)||rows[0];
+    let key='part';try{if(S.res.has(part.p))key=ri.key(part.p)}catch{}
+    if(M)key+='|'+M.nv+'|'+(M.idx?M.idx.length:0);
+    members.push(key);
+   }
+   if(!members.length)continue;
+   const sig=[g.kind||'',g.name||'',members.length,members.join(';')].join('|');
+   for(const name of g.classes||[]){if(!modelSigs.has(name))modelSigs.set(name,[]);modelSigs.get(name).push(sig)}
+  }
+ }catch(e){
+  // A model parser regression must not disable dependency reports, but it
+  // also must not make two unverified model signatures look identical.
+  modelAnalysisError=String(e);
+ }
  const out={},plural=(n,s)=>n+' '+s+(n>1?'s':'');
  w.classes.forEach((c,k)=>{try{const[a0,b0]=lo[k],roots=[c.entry];for(const[key,p]of c.events)if(p&&a0<p&&p<b0&&az.ins.has(p))roots.push(p);
   const every=new Set(),done=new Set(),pend=[...roots];let bytes=0;
@@ -226,13 +321,19 @@ function classReports(A,B){const w=siWad(A,B);if(!w)return{};const az=new SiAn(w
   const kinds={},cls=new Set(),strs=[],ptrs=[];
   for(const o of every){const i=az.ins.get(o);if(!i)continue;bytes+=4*i.size;for(let q=0;q<i.size;q++){const r=o+4*q;if(!w.rel.has(r))continue;const v=U(r);let t;
     if(byOff.has(v)){t='class';cls.add(byOff.get(v))}else if(v>=code&&v<code+4*ncode)t='code';else if(v>=cl0&&v<clEnd)t='class record';
-    else{const s=v>=0x8c000&&v<code&&siCstr(A,v),rr=resOf(v);if(s&&/^[\x20-\x7e]{1,80}$/.test(s)&&A[v-1]===0){t='string';if(strs.length<8&&!strs.includes(s))strs.push(s)}else if(rr>=0&&v<code)t=KN[rr]||('resource 0x'+rr.toString(16));else if(v>=clEnd&&v<ins)t='event/pool data';else if(v>=0x8c000&&v<code)t='level data';else t='other'}
+    else{const s=v>=0x8c000&&v<code&&siCstr(A,v),rr=resOf(v);if(s&&/^[\x20-\x7e]{1,80}$/.test(s)&&A[v-1]===0){t='string';if(strs.length<8&&!strs.includes(s))strs.push(s)}else if(rr>=0&&v<code)t=KN[res[rr][1]]||('resource 0x'+res[rr][1].toString(16));else if(v>=clEnd&&v<ins)t='event/pool data';else if(v>=0x8c000&&v<code)t='level data';else t='other'}
     kinds[t]=(kinds[t]||0)+1;if(ptrs.length<400)ptrs.push([t,v,r])}}
   cls.delete(c.name);const reasons=[];
   for(const t in kinds){if(['class','code','string','event/pool data','texture','material','skeleton/animation','mesh part','mesh','vertex buffer','level data','other','sound','sound bank'].includes(t))continue;reasons.push(t==='level data'||t==='other'?'points at '+plural(kinds[t],'object')+' in the level data region (size unknown)':t==='class record'?'points inside a class record':'uses '+plural(kinds[t],t)+' of the source level')}
-  out[c.name]={name:c.name,kinds,classes:[...cls],strs,bytes,reasons,ptrs,assets:reasons.length>0}}
- catch(e){out[c.name]={name:c.name,kinds:{},classes:[],strs:[],bytes:0,reasons:['analysis failed: '+e],assets:true}}});
- return out}
+  const instructionOrder=new Map([...every].sort((a,b)=>a-b).map((off,i)=>[off,i]));
+  const scriptRows=[...every].sort((a,b)=>a-b).map(o=>{const i=az.ins.get(o);if(!i)return'';const words=[];for(let q=0;q<i.size;q++){const p=o+4*q;words.push(w.rel.has(p)?'@'+targetToken(U(p),0,new Set(),instructionOrder):U(p).toString(16))}return i.size+':'+words.join(',')});
+  const modelRows=(modelSigs.get(c.name)||[]).slice().sort();
+  const fingerprint=modelAnalysisError?'analysis-error:model parser: '+modelAnalysisError:hashText('SCRIPT\\n'+scriptRows.join('\\n')+'\\nMODEL\\n'+modelRows.join('\\n'));
+  out[c.name]={name:c.name,kinds,classes:[...cls],strs,bytes,reasons,ptrs,assets:reasons.length>0,fingerprint,modelFingerprint:modelAnalysisError?'analysis-error:'+modelAnalysisError:hashText(modelRows.join('\\n')),modelGroups:modelRows.length};
+ }catch(e){out[c.name]={name:c.name,kinds:{},classes:[],strs:[],bytes:0,reasons:['analysis failed: '+e],assets:true,fingerprint:'analysis-error:'+String(e)}}});
+ if(A&&typeof A==='object'){let cached=classReportCache.get(A);if(!cached){cached=new WeakMap();classReportCache.set(A,cached)}cached.set(B,out)}
+ return out
+}
 // ---- data-object copier: copies the small linked records (level data region) a class points at into another wad
 // Source view of a wad: pointer targets, resource starts, class records
 function SrcCtx(A,B){const w=siWad(A,B),imp=fixups(B),U=w.U,h=imp[0x8000010e][0],code=U(h+0x10),res=new Map();
@@ -351,7 +452,15 @@ function copyGraph(S,bld,roots,hooks,opts){opts=opts||{};const A=S.A,U=S.U,relS=
     if((nd.type===0x23||nd.type===0x24)&&(off===16||off===24)){const str=D(t+8),nv=D(t+12),ni=D(t+20);force=off===16?nv*str:ni*2;if(force<=0||force>BIG)throw resName(nd.type)+' @'+t.toString(16)+' has a bad buffer size'}
     q.push([v,nd,force])}
    continue}
-  if(c.k==='data'){const ex=ext(t),lim=own?BIG:0x10000;if(!fs&&ex>lim)throw'data @'+t.toString(16)+' is too large to copy safely ('+ex+' bytes)';const size=fs||ex;if(size<=0)throw'empty data object @'+t.toString(16);
+  if(c.k==='data'){const ex=ext(t),lim=own?BIG:0x10000;
+   // Large unowned level-data blocks are normally ambiguous: without a known
+   // owner/layout, blindly copying them can absorb unrelated level state. A
+   // pointer-free block is different. It is an opaque byte payload, so its
+   // full extent can be copied safely without interpreting internal fields.
+   // Keep the 8 MiB hard ceiling and retain the old rejection for any large
+   // block containing relocations we cannot prove how to rewrite.
+   let hasRelocs=false;if(!fs&&ex>lim&&ex<=BIG){for(let p=t;p<t+ex;p+=4)if(relS.has(p)){hasRelocs=true;break}}
+   if(!fs&&ex>lim&&(ex>BIG||hasRelocs))throw'data @'+t.toString(16)+' is too large to copy safely ('+ex+' bytes)';const size=fs||ex;if(size<=0)throw'empty data object @'+t.toString(16);
    const nd={k:'data',off:t,size,ptrs:[],own,raw:!!fs};nodes.set(t,nd);order.push(nd);if(own)own.owned.push(nd);
    for(let p=t;p<t+size;p+=4)if(relS.has(p)){const v=D(p);nd.ptrs.push([p-t,v]);q.push([v,own,0])}
    continue}

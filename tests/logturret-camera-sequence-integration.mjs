@@ -6,7 +6,8 @@ import {
 import { EC } from '../js/editor-core.js';
 import { installPrefabManager, discoverNamedCompanionInstances } from '../js/prefabs.js';
 
-// Real-game regression. Supply the paired archives to exercise 30-23.LCS -> 10-00.LCS.
+// Real-game regression. By default this exercises 30-23.LCS -> 10-00.LCS;
+// ININJA_TEST_TARGET_LEVEL can select another target level for archive coverage.
 const sourceVolPath = process.env.ININJA_TEST_30_VOL;
 const targetVolPath = process.env.ININJA_TEST_VOL;
 if (!sourceVolPath || !targetVolPath || !fs.existsSync(sourceVolPath) || !fs.existsSync(targetVolPath)) {
@@ -42,9 +43,10 @@ const getRaw = name => {
   }
   return wadCache.get(name);
 };
-const sourceName = '30-23.LCS', targetName = '10-00.LCS';
+const targetLevelId = process.env.ININJA_TEST_TARGET_LEVEL || '10-00';
+const sourceName = '30-23.LCS', targetName = targetLevelId + '.LCS';
 assert.equal(sourceBase, '30');
-assert.equal(targetBase, '10');
+assert.equal(targetBase, targetLevelId.split('-')[0]);
 const source = getRaw(sourceName), target = getRaw(targetName);
 const sourceEntities = instances(source.A, source.B), targetEntities = instances(target.A, target.B);
 const wall = sourceEntities.find(e => e.n === 'LogTurretWall');
@@ -72,7 +74,7 @@ const el = id => {
 globalThis.document = { createElement: tag => el('created-' + tag) };
 globalThis.innerWidth = 1280;
 globalThis.innerHeight = 720;
-const targetLevel = { id: '10-00', all0: targetEntities, ents: targetEntities, nb: targetEntities.length };
+const targetLevel = { id: targetLevelId, all0: targetEntities, ents: targetEntities, nb: targetEntities.length };
 const Viewer = { files, D: [targetLevel], sel: null, all: [], $: el, refresh() {}, inspect() {}, need: false };
 const WS = w => project.wads[w] || (project.wads[w] = { mods: {}, adds: [], del: [], classes: [] });
 const targetEntry = files.find(f => f.name === targetName);
@@ -133,8 +135,8 @@ assert.equal(legacy.nodes[1].from.i, turret.i);
 assert.equal(legacy.nodes[1].named, true);
 
 // Placing a wall-only legacy favourite must copy both the wall and its runtime
-// LogTurret partner, and import the private Splash block variants used by the
-// source turret without replacing the hub's original Splash classes.
+// LogTurret partner, and import any source-specific class variants without
+// replacing same-named destination implementations.
 manager.pushFavoriteGraph(targetName, legacy, [100, 0, 100]);
 const targetProject = project.wads[targetName];
 assert.deepEqual(targetProject.adds.map(a => a.from.i), [60, 59]);
@@ -142,14 +144,37 @@ assert.deepEqual(targetProject.adds[1].p, [147.98, -5.3, 76.34]);
 assert.ok(targetProject.classes.some(c => c.from.name === 'LogTurretWall'));
 assert.ok(targetProject.classes.some(c => c.from.name === 'LogTurret'));
 const turretClassImport = targetProject.classes.find(c => c.from.name === 'LogTurret');
-assert.deepEqual(turretClassImport.variants.map(v => v.name), [
-  'Splash', 'Splash_Circle', 'Splash_Inner_Upshoot', 'Splash_Outer_Upshoot', 'Splash_Particles'
-]);
+if (targetBase === '10') {
+  assert.deepEqual(turretClassImport.variants.map(v => v.name), [
+    'Splash', 'Splash_Circle', 'Splash_Inner_Upshoot', 'Splash_Outer_Upshoot', 'Splash_Particles'
+  ]);
+} else {
+  assert.ok(turretClassImport.variants.length > 0,
+    'a destination with different class dependencies receives source-specific turret variants');
+}
 
-// The game broadcasts to every LogTurretCamera and finds the paired LogTurret
-// by name near the wall path's second waypoint. Refuse duplicate pairs which
-// could make two sequences steal one another's camera and softlock.
-assert.throws(() => manager.pushFavoriteGraph(targetName, legacy, [160, 0, 160]), /LogTurret already exists/);
+// A second wall can be positioned before its waypoint is adjusted. It reuses
+// the one compatible turret and reports that the cutscene waypoint must be
+// moved onto it before the level is run.
+manager.pushFavoriteGraph(targetName, legacy, [160, 0, 160]);
+assert.deepEqual(targetProject.adds.map(a => a.from.i), [60, 59, 60]);
+assert.match(Viewer.$('ed_sum').textContent, /waypoint adjustment required before running/i);
+
+// Match the workflow exposed by the inspector's waypoint editor: path nodes
+// are stored relative to the placed wall, so move the camera target node to
+// the existing turret's world position.
+const secondWallAdd = targetProject.adds[2];
+assert.ok(wall.path && wall.path.length >= 2, 'source wall has an editable cutscene waypoint path');
+secondWallAdd.path = wall.path.map(node => node.map((v, k) => v - wall.p[k]));
+secondWallAdd.path[secondWallAdd.path.length - 1] = targetProject.adds[1].p
+  .map((v, k) => v - secondWallAdd.p[k]);
+
+// The level-wide camera broadcast remains a hard safety guard: even though a
+// misaligned waypoint is now editable after placement, a second actual turret
+// must still be rejected.
+targetProject.adds.push({ ...targetProject.adds[1], id: 999, p: [999, 0, 999] });
+assert.throws(() => manager.pushFavoriteGraph(targetName, legacy, [220, 0, 220]), /only one LogTurret sequence/i);
+targetProject.adds.pop();
 
 const soundPlan = EC.SoundPlan(targetHeader.getUint32(0x78, true), targetHeader.getUint32(0x7c, true));
 const built = EC.patchLcs(target.A, target.B, {
@@ -157,24 +182,38 @@ const built = EC.patchLcs(target.A, target.B, {
 }, targetName, name => name === sourceName ? source : null, { snd: soundPlan });
 const rebuiltEntities = instances(built.A, built.B);
 const added = rebuiltEntities.slice(targetEntities.length);
-assert.deepEqual(added.map(e => e.n), ['LogTurretWall', 'LogTurret']);
-const rebuiltWall = added[0], rebuiltTurret = added[1];
+assert.deepEqual(added.map(e => e.n), ['LogTurretWall', 'LogTurret', 'LogTurretWall']);
+const rebuiltWall = added[0], rebuiltTurret = added[1], rebuiltWall2 = added[2];
 assert.ok(rebuiltWall.path && rebuiltWall.path.length >= 2, 'the wall retains its break/cutscene waypoint path');
 const endpoint = rebuiltWall.path[rebuiltWall.path.length - 1];
 const endpointDistance = Math.hypot(...endpoint.map((v, k) => v - rebuiltTurret.p[k]));
 assert.ok(endpointDistance < 1.25, `wall's second waypoint remains near its matching turret (${endpointDistance})`);
+assert.ok(rebuiltWall2.path && rebuiltWall2.path.length >= 2, 'the second wall retains the edited waypoint path');
+const endpoint2 = rebuiltWall2.path[rebuiltWall2.path.length - 1];
+const endpointDistance2 = Math.hypot(...endpoint2.map((v, k) => v - rebuiltTurret.p[k]));
+assert.ok(endpointDistance2 < 1.25, `manually adjusted second wall waypoint reaches the reused turret (${endpointDistance2})`);
 const classNames = siWad(built.A, built.B).classes.map(c => c.name);
 for (const name of [
-  'LogTurretWall', 'LogTurretWallPiece', 'LogTurretCutscene', 'LogTurret', 'LogturretRocket', 'LogTurretCamera',
-  'Splash', 'Splash__source_30_23', 'Splash_Circle__source_30_23', 'Splash_Inner_Upshoot__source_30_23',
-  'Splash_Outer_Upshoot__source_30_23', 'Splash_Particles__source_30_23'
+  'LogTurretWall', 'LogTurretWallPiece', 'LogTurretCutscene', 'LogTurret', 'LogturretRocket', 'LogTurretCamera'
 ]) assert.ok(classNames.includes(name), `copied class/dependency ${name}`);
+if (targetBase === '10') {
+  for (const name of [
+    'Splash', 'Splash__source_30_23', 'Splash_Circle__source_30_23', 'Splash_Inner_Upshoot__source_30_23',
+    'Splash_Outer_Upshoot__source_30_23', 'Splash_Particles__source_30_23'
+  ]) assert.ok(classNames.includes(name), `copied class/dependency ${name}`);
+} else {
+  for (const variant of turretClassImport.variants) {
+    assert.ok(classNames.includes(variant.alias), `source-specific turret variant ${variant.alias} is present`);
+  }
+}
 assert.ok(soundPlan.adds.length > 0, 'LogTurret sound resources are scheduled for the destination PCA');
 const rebuiltPca = EC.buildPca(pcaFor(targetName), soundPlan, wad => ({ pca: pcaFor(wad), ...headerFor(wad) }));
 assert.ok(rebuiltPca.length >= pcaFor(targetName).length, 'destination PCA rebuild includes copied LogTurret audio');
 const relocations = fixups(built.B).rel, d = new DataView(built.A.buffer, built.A.byteOffset, built.A.byteLength);
 for (const r of relocations) assert.ok(d.getUint32(r, true) < built.A.length, `valid relocation at 0x${r.toString(16)}`);
 console.log('PASS LogTurretWall captures LogTurretCutscene name companion and copies a complete paired sequence');
-console.log('PASS LogTurret imports source-specific Splash shared-code-block variants without colliding with the hub');
+console.log('PASS a misplaced wall can be placed, its waypoint adjusted, and the single existing turret reused');
+console.log('PASS a second actual LogTurret remains blocked to protect the shared camera sequence');
+console.log('PASS LogTurret imports source-specific shared-code-block variants without colliding with the destination');
 console.log('PASS LogTurret singleton guard prevents duplicate camera sequences');
 console.log('PASS LogTurret LCS and PCA resources rebuild with valid pointers');
