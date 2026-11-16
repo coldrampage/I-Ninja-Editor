@@ -1214,7 +1214,9 @@ export function installPrefabManager({
   function stripLinkRegs(a) {
     const L = srcLinks(a.from.w);
     if (L) for (const [ow, rg] of L.rows) if (ow === a.from.i) delete a.regs[rg];
+    for (const rg of a.linkRegs || []) delete a.regs[rg];
     a.lk = [];
+    a.linkRegs = [];
   }
 
   // Attach the existing cross-level control to the current entity inspector.

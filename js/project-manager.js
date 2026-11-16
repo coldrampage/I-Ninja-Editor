@@ -18,12 +18,14 @@ export function installProjectManager({
     j.wads = j.wads || {};
     j.textures = j.textures || {};
     j.tints = j.tints || {};
+    j.audioAssets = j.audioAssets || {};
     j.display = j.display || {};
     for (const w in j.tints) j.tints[w].inst = j.tints[w].inst || {};
     for (const w in j.textures) j.textures[w].ops = Array.isArray(j.textures[w].ops) ? j.textures[w].ops : [];
     for (const w in j.wads) {
       j.wads[w].mods = j.wads[w].mods || {};
       j.wads[w].adds = j.wads[w].adds || [];
+      j.wads[w].music = j.wads[w].music || {};
     }
     return j;
   }
@@ -74,9 +76,10 @@ export function installProjectManager({
       const P = PRJ.wads[w], mods = {};
       for (const k in P.mods) if (unzero(P.mods[k])) mods[k] = P.mods[k];
       const del = [...new Set(P.del || [])].sort((a,b) => a-b);
+      const music = Object.fromEntries(Object.entries(P.music || {}).filter(([,id]) => !!id));
       const classes = (P.classes || []).filter(k => P.adds.some(a => a.from.w === k.from.w && sourceClass(a) === k.from.name));
-      if (Object.keys(mods).length || P.adds.length || del.length) {
-        out[w] = {vol: volOf(w) || P.vol, mods, adds: P.adds, del, classes, fp: P.fp};
+      if (Object.keys(mods).length || P.adds.length || del.length || Object.keys(music).length) {
+        out[w] = {vol: volOf(w) || P.vol, mods, adds: P.adds, del, classes, music, fp: P.fp};
       }
     }
     return out;
@@ -142,7 +145,7 @@ export function installProjectManager({
       for (const f of Viewer.files) if (f.vol) vv[f.vol] = f.buf.byteLength;
       PRJ.vols = vv;
       const scr = buildScriptWadsFp();
-      dl([JSON.stringify({app:'ininja-editor', v:1, vols:PRJ.vols, models:PRJ.models || {}, prefabs:PRJ.prefabs || [], wads, scripts:scr, textures:texturesFp(), tints:tintsFp(), display:PRJ.display || {}}, null, 1)], 'ininja-project.json', 'application/json');
+      dl([JSON.stringify({app:'ininja-editor', v:1, vols:PRJ.vols, models:PRJ.models || {}, prefabs:PRJ.prefabs || [], audioAssets:PRJ.audioAssets || {}, wads, scripts:scr, textures:texturesFp(), tints:tintsFp(), display:PRJ.display || {}}, null, 1)], 'ininja-project.json', 'application/json');
       $('ed_sum').textContent = 'project saved: ' + Object.keys(wads).length + ' level(s) with instance edits, ' + Object.keys(scr).length + ' with code edits, ' + (PRJ.prefabs || []).length + ' prefab favourite(s) (holds only your edits, no game data)';
     } catch (x) {
       $('ed_sum').textContent = 'save failed: ' + x;
@@ -179,7 +182,7 @@ export function installProjectManager({
           }
           if (tplan) { const t = applyTintData(A, B, tplan); A = t.A; B = t.B; tintRep.push(w + ': ' + t.report); }
           const sp = sndPlan(w);
-          let r0 = wads[w] ? EC.patchLcs(A, B, wads[w], w, srcWad, {snd:sp}) : {A,B};
+          let r0 = wads[w] ? EC.patchLcs(A, B, wads[w], w, srcWad, {snd:sp, audioAssets:getProject().audioAssets || {}, musicAssets:wads[w] && wads[w].music || {}}) : {A,B};
           if (tx[w]) { const t = applyTextureOps(r0.A, r0.B, tx[w].ops); r0 = {A:t.A, B:t.B}; texRep.push(w + ': ' + t.report.join('; ')); }
           const r = EC.healResDir(r0.A, r0.B);
           if (r.added.tex || r.added.mesh) healed.push(w + ' (+' + r.added.tex + ' tex, +' + r.added.mesh + ' mesh)');
@@ -193,21 +196,26 @@ export function installProjectManager({
         // Rebuild copied sound PCA blocks, then lay this volume's AVL out again.
         let ap = null, avlOut = '';
         if (Object.keys(plans).length) {
-          const need = new Set([V]);
-          for (const w in plans) for (const a of plans[w].adds) need.add(volOf(a.w));
-          for (const v of need) await avlLoad(v);
           const pn = n => n.replace(/\.LCS$/i, '.PCA');
-          const pcaOf = n => {
-            const a = getAvl(volOf(n)), e = a && a.list && a.list.find(x => x.name === pn(n));
-            if (!e) throw 'no ' + pn(n) + ' in ' + (a ? a.name : vbase(volOf(n)) + '.avl');
-            return new Uint8Array(a.buf, e.off, e.size);
-          };
+          const pcaNames = new Set(Object.keys(plans));
+          for (const w in plans) for (const a of plans[w].adds) if (a.w) pcaNames.add(a.w);
+          // Copy only the PCA entries needed for this build. Full .avl buffers
+          // can then be evicted as we move between source volumes.
+          const pcaData = new Map();
+          for (const n of pcaNames) {
+            const volume = volOf(n);
+            const a = await avlLoad(volume), entry = a.list && a.list.find(x => x.name.toLowerCase() === pn(n).toLowerCase());
+            if (!entry) throw 'no ' + pn(n) + ' in ' + (a ? a.name : vbase(volume) + '.avl');
+            if (!Number.isInteger(entry.off) || !Number.isInteger(entry.size) || entry.off < 0 || entry.size <= 0 || entry.off + entry.size > a.buf.byteLength) throw pn(n) + ' has an invalid archive range';
+            const vf0 = Viewer.files.find(x => x.name.toLowerCase() === n.toLowerCase());
+            if (!vf0) throw 'level ' + n + ' is not loaded';
+            pcaData.set(n, {pca:new Uint8Array(a.buf, entry.off, entry.size).slice(), h78:new DataView(vf0.buf, vf0.off).getUint32(0x78, true)});
+          }
+          const pcaOf = n => { const data = pcaData.get(n); if (!data) throw 'no cached PCA data for ' + n; return data; };
           const rep2 = {};
-          for (const w in plans) rep2[pn(w)] = EC.buildPca(pcaOf(w), plans[w], sw => {
-            const sf = Viewer.files.find(x => x.name === sw);
-            return sf ? {pca:pcaOf(sw), h78:new DataView(sf.buf, sf.off).getUint32(0x78, true)} : null;
-          });
-          const A = getAvl(V);
+          for (const w in plans) rep2[pn(w)] = EC.buildPca(pcaOf(w).pca, plans[w], sw => pcaOf(sw));
+          // Reload the target .avl if the LRU evicted it while collecting source PCAs.
+          const A = await avlLoad(V);
           ap = EC.rebuildVol(A.buf, rep2);
           avlOut = A.name.replace(/\.avl$/i, '') + '.patched.avl';
         }

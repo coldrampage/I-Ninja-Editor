@@ -71,7 +71,7 @@ assert.match(prefabs, /function\s+injectMoveControl\s*\(/, 'prefab module owns c
 console.log('PASS: prefab module boundaries and dependency injection');
 
 // The coordinator must explicitly import every parser helper it injects into the prefab module.
-assert.match(source, /import\s*\{[^}]*\binstances\b[^}]*\bfixups\b[^}]*\}\s*from ['\"]\.\/vol-core\.js['\"]/, 'coordinator imports instances and fixups from vol-core');
+assert.match(source, /import\s*\{[^}]*\binstances\b[^}]*\bfixups\b[^}]*\}\s*from ['\"]\.\/vol-core\.js(?:\?[^'\"]*)?['\"]/, 'coordinator imports instances and fixups from vol-core');
 assert.match(volCore, /export\s*\{[^}]*\binstances\b[^}]*\bfixups\b[^}]*\}/s, 'vol-core exports instances and fixups');
 assert.match(source, /installPrefabManager\(\{[^}]*\binstances\s*,\s*fixups/s, 'prefab module receives the imported parser helpers');
 console.log('PASS: prefab parser helpers are imported, exported and injected');

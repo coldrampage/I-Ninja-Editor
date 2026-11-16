@@ -61,12 +61,43 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
   if(oldInfo&&oldInfo.kind!==info.kind)throw'sound format mismatch: '+oldInfo.kind+' cannot be replaced with '+info.kind;
   W(slot,off);addRel(slot);
  };
+ const customSoundHandles=new Map();
+ const writeCustomSoundSlot=(slot,id)=>{
+  if(!env||!env.snd||typeof env.snd.addCustom!=='function')throw"custom sound import needs the target volume's paired .avl loaded";
+  const asset=env.audioAssets&&env.audioAssets[id];if(!asset)throw'custom sound asset '+id+' is missing from the project; re-import it';
+  if(customSoundHandles.has(id)){writeSoundSlot(slot,customSoundHandles.get(id));return}
+  const place=env.snd.addCustom(asset);
+  const bankBytes=makeCustomSoundBank(asset,place.off,place.len);
+  const bankOff=alloc(bankBytes.length,16);A.set(bankBytes,bankOff);
+  gshim.addSpec(0x113,bankOff,[]);
+  const handleOff=alloc(4,4);W(handleOff,bankOff);rel.add(handleOff);gshim.addSpec(0x115,handleOff,[handleOff]);
+  customSoundHandles.set(id,handleOff);
+  writeSoundSlot(slot,handleOff);
+ };
+ const writeCustomMusicBank=(bankOff,id)=>{
+  if(!env||!env.snd||typeof env.snd.addCustom!=='function')throw"music replacement needs the matching volume's paired .avl loaded";
+  const asset=env.audioAssets&&env.audioAssets[id];if(!asset)throw'custom music asset '+id+' is missing from the project; re-import it';
+  if(!(imp[0x80000113]||[]).includes(bankOff))throw'music bank @'+bankOff.toString(16)+' is not a registered level resource';
+  const info=bankInfo(A,bankOff),riff=riffChunks(A,bankOff);
+  if(!info||!riff||!['WAVE','WAVS'].includes(info.kind))throw'music target @'+bankOff.toString(16)+' is not a supported WAVE/WAVS bank';
+  if(asset.kind!==info.kind)throw'music format mismatch: '+info.kind+' cannot be replaced with '+asset.kind;
+  const fmt=riff.chunks['fmt ']&&riff.chunks['fmt '][0],fact=riff.chunks.fact&&riff.chunks.fact[0],strm=riff.chunks.strm&&riff.chunks.strm[0];
+  if(!fmt||fmt.n<20||!fact||fact.n<4||!strm||strm.n<8)throw'music bank @'+bankOff.toString(16)+' has an unsupported descriptor layout';
+  const channels=+asset.channels,rate=+asset.sampleRate,samples=+asset.samples,blockAlign=36*channels;
+  if((channels!==1&&channels!==2)||!Number.isInteger(rate)||rate<8000||rate>48000||!Number.isInteger(samples)||samples<1)throw'custom music metadata is invalid';
+  const place=env.snd.addCustom(asset);if(place.kind!==info.kind)throw'music storage type changed unexpectedly';
+  const fd=new DataView(A.buffer,A.byteOffset,A.byteLength);
+  fd.setUint16(fmt.at,0x0069,true);fd.setUint16(fmt.at+2,channels,true);fd.setUint32(fmt.at+4,rate,true);
+  fd.setUint32(fmt.at+8,Math.round(rate*blockAlign/64),true);fd.setUint16(fmt.at+12,blockAlign,true);fd.setUint16(fmt.at+14,4,true);fd.setUint16(fmt.at+16,2,true);fd.setUint16(fmt.at+18,64,true);
+  fd.setUint32(fact.at,samples,true);fd.setUint32(strm.at,place.off,true);fd.setUint32(strm.at+4,place.len,true);
+ };
+ for(const [bankKey,assetId] of Object.entries(env&&env.musicAssets||{}))if(assetId)writeCustomMusicBank(+bankKey,String(assetId));
  const editValue=(x,key)=>x&&typeof x==='object'?x[key]:x;
  const applyAddedDataEdits=(a,sw,same,sourceInit,targetInit)=>{
   const g=gctx[a.from.w];
   const targetSlot=edit=>{const owner=+edit.owner,sourceSlot=+edit.slot;if(edit.ownerKind==='init')return targetInit+(sourceSlot-sourceInit);const destOwner=g&&g.memo.has(owner)?g.memo.get(owner):(same?owner:null);if(destOwner===undefined||destOwner===null)throw'linked data block @'+owner.toString(16)+' was not copied with '+a.from.w+'; its text/audio link cannot be edited safely';return destOwner+(sourceSlot-owner)};
   for(const[slot,edit]of Object.entries(a.texts||{})){const rec=edit&&typeof edit==='object'?{...edit,slot:+slot}:{owner:+slot,slot:+slot,value:edit};writeTextSlot(targetSlot(rec),rec.value);}
-  for(const[slot,edit]of Object.entries(a.sounds||{})){const rec=edit&&typeof edit==='object'?{...edit,slot:+slot}:{owner:+slot,slot:+slot,off:edit};const sourceOff=+rec.off;const targetOff=gcopy(sw,a.from.w,sourceOff);writeSoundSlot(targetSlot(rec),targetOff);}
+  for(const[slot,edit]of Object.entries(a.sounds||{})){const rec=edit&&typeof edit==='object'?{...edit,slot:+slot}:{owner:+slot,slot:+slot,off:edit};const dst=targetSlot(rec);if(rec.customId)writeCustomSoundSlot(dst,rec.customId);else{const sourceOff=+rec.off;const targetOff=gcopy(sw,a.from.w,sourceOff);writeSoundSlot(dst,targetOff)}}
  };
  const moveShape=(sp,dd,seen)=>{if(!sp||seen.has(sp))return;seen.add(sp);const ty=U(sp)&0xffff,cnt=U(sp)>>>16,pp=U(sp+4);
   for(let k=0;k<3;k++){WF(sp+8+4*k,F(sp+8+4*k)+dd[k]);WF(sp+20+4*k,F(sp+20+4*k)+dd[k])}
@@ -154,18 +185,26 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
    for(const[slot,edit]of initTextEntries){const rec=edit&&typeof edit==='object'?edit:{owner:old,slot:+slot,value:edit};const dst=np+(+slot-(+rec.owner));writeTextSlot(dst,rec.value)}
   }
   for(const[slot,edit]of textEntries)if(!(edit&&typeof edit==='object'&&edit.ownerKind==='init'))writeTextSlot(+slot,editValue(edit,'value'));
-  for(const[slot,edit]of Object.entries(m.sounds||{}))writeSoundSlot(+slot,+editValue(edit,'off'));
+  for(const[slot,edit]of Object.entries(m.sounds||{})){const rec=edit&&typeof edit==='object'?edit:{off:edit};if(rec.customId)writeCustomSoundSlot(+slot,rec.customId);else writeSoundSlot(+slot,+editValue(edit,'off'))}
  }
  // ---- 2) new instances: move the instance table (and link table) to the end of the block and append
- const adds=ops.adds||[];
+ const adds=ops.adds||[], mods=ops.mods||{};
  let lkChanged=false;
- if(adds.length||del.size){const kept=[];for(let i=0;i<nin;i++)if(!del.has(i))kept.push(i);const map=new Map(kept.map((o,n)=>[o,n])),nk=kept.length,nn=nk+adds.length;
+ const linkOnlyChange=Object.values(mods).some(m=>(m.linkRegs||[]).length||(m.lk||[]).length);
+ if(adds.length||del.size||linkOnlyChange){const kept=[];for(let i=0;i<nin;i++)if(!del.has(i))kept.push(i);const map=new Map(kept.map((o,n)=>[o,n])),nk=kept.length,nn=nk+adds.length;
   // the per-class lists end where the instance table starts, so they move together with it
   let bs=ins;for(let i=0;i<ncl;i++)bs=Math.min(bs,U(cl+i*CLS+0x1c));const bl=ins-bs,Tb=alloc(bl+nn*INS),T=Tb+bl;A.copyWithin(Tb,bs,ins);for(let w=0;w<bl;w+=4)if(rel.has(bs+w))addRel(Tb+w);
   for(let i=0;i<ncl;i++){const o=cl+i*CLS+0x1c,v=U(o);if(v>=bs&&v<ins)W(o,v-bs+Tb);else if(v>=ins)W(o,T)}
   
   kept.forEach((o0,n)=>{const so=ins+o0*INS,to=T+n*INS;A.copyWithin(to,so,so+INS);for(let w=0;w<INS;w+=4)if(rel.has(so+w))addRel(to+w);W(to+0x38,n)});
   const lk=[];for(let i=0;i<nlk;i++){const ow=d.getUint16(lnk+4*i,true),rg=d.getUint16(lnk+4*i+2,true);if(map.has(ow))lk.push([map.get(ow),rg])}
+  // Add new optional link-table entries for existing entities. These are used
+  // by EnemyGenerator's empty enemy slots, whose script reads R1–R20 even
+  // when the source LCS has no link tuple for a particular slot.
+  for(const[k,m]of Object.entries(mods)){const owner=map.get(+k);if(owner===undefined||del.has(+k))continue;
+   const cp=U(T+owner*INS+0x28),ni=d.getUint16(cp+0x18,true);
+   for(const rg0 of m.linkRegs||[]){const rg=+rg0;if(!Number.isInteger(rg)||rg<0||rg>=ni)throw'link register '+rg+' out of range';if(!lk.some(x=>x[0]===owner&&x[1]===rg)){lk.push([owner,rg]);lkChanged=true}}
+  }
   // registers that hold instance indices follow the renumbering (copy-on-write: init arrays can be shared)
   if(del.size){const cow=new Set();for(const[n,rg]of lk){const to=T+n*INS;let ip=U(to+0x2c);const v=U(ip+4*rg);if(del.has(v))throw'instance #'+kept[n]+' links to removed instance #'+v+' (register '+rg+') in '+wadName;
     if(map.has(v)&&map.get(v)!==v){if(!cow.has(n)){const ni=d.getUint16(U(to+0x28)+0x18,true),np=alloc(4*Math.max(ni,1));for(let r=0;r<ni;r++){W(np+4*r,U(ip+4*r));if(rel.has(ip+4*r))addRel(np+4*r)}W(to+0x2c,np);cow.add(n);ip=np}W(ip+4*rg,map.get(v))}}
@@ -204,6 +243,7 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
     if(same){lk.push([idx,rg]);const v=U(ip+4*rg);if(del.has(v))throw'prefab links to removed instance #'+v;if(map.has(v)&&map.get(v)!==v)W(ip+4*rg,map.get(v))}
     else if(a.regs&&a.regs[rg]!==undefined){lk.push([idx,rg]);const v=U(ip+4*rg);if(del.has(v))throw'prefab links to removed instance #'+v;if(map.has(v)&&map.get(v)!==v)W(ip+4*rg,map.get(v))}   // link picked by hand in the editor: an instance of THIS level
     else{rel.delete(ip+4*rg);W(ip+4*rg,0)}}   // another level's instance numbers mean nothing here: leave the link empty
+   for(const rg0 of a.linkRegs||[]){const rg=+rg0;if(!Number.isInteger(rg)||rg<0||rg>=ni)throw'link register '+rg+' out of range';const v=U(ip+4*rg);if(del.has(v))throw'prefab links to removed instance #'+v;if(map.has(v)&&map.get(v)!==v)W(ip+4*rg,map.get(v));if(!lk.some(x=>x[0]===idx&&x[1]===rg)){lk.push([idx,rg]);lkChanged=true}}
    // path nodes (0x40 each; +0 prev, +4 next)
    const pn=sU(so+0x30);W(o+0x30,0);
    if(pn){const sn=pathNodes(sd,sU,pn),cur=sn.indexOf(pn),base=alloc(sn.length*0x40);
@@ -222,9 +262,10 @@ function patchLcs0(A0,B0,ops,wadName,srcWad,env){
    if(a.trigger)writeTriggerShape(o,a.trigger,a.p,U(o+0x34));
    rot(o,a.dy||0,a.dp||0,a.dr||0)});
   // links of existing instances to NEW instances picked by hand (the new instance's number is only known now)
-  for(const[k,m]of Object.entries(ops.mods||{})){if(!m.lk||!m.lk.length||del.has(+k))continue;const to=T+map.get(+k)*INS,cp=U(to+0x28),nir=d.getUint16(cp+0x18,true),old=U(to+0x2c),np=alloc(4*Math.max(nir,1));
+  for(const[k,m]of Object.entries(mods)){if(!m.lk||!m.lk.length||del.has(+k))continue;const owner=map.get(+k),to=T+owner*INS,cp=U(to+0x28),nir=d.getUint16(cp+0x18,true),old=U(to+0x2c),np=alloc(4*Math.max(nir,1));
    for(let r=0;r<nir;r++){W(np+4*r,U(old+4*r));if(rel.has(old+4*r))addRel(np+4*r)}W(to+0x2c,np);addRel(to+0x2c);
-   for(const[rg,cid]of m.lk){if(!(rg<nir))throw'link register '+rg+' out of range';const ci=idToIdx.get(cid);rel.delete(np+4*rg);W(np+4*rg,ci===undefined?0:ci)}}
+   for(const[rg,cid]of m.lk){if(!(rg<nir))throw'link register '+rg+' out of range';const ci=idToIdx.get(cid);rel.delete(np+4*rg);W(np+4*rg,ci===undefined?0:ci);if(ci!==undefined&&!lk.some(x=>x[0]===owner&&x[1]===rg)){lk.push([owner,rg]);lkChanged=true}}}
+  lk.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
   W(h+0x28,T);d.setUint16(h+0x30,nn,true);
   if(lk.length!==nlk||(lkChanged&&lk.length)){const L=alloc(4*lk.length,4);lk.forEach(([ow,rg],i)=>{d.setUint16(L+4*i,ow,true);d.setUint16(L+4*i+2,rg,true)});W(h+0x2c,L);d.setUint16(h+0x32,lk.length,true)}}
  return{A:A.slice(0,len),B:mergeB(B0,newRel,gshim.newSpec)}}
@@ -534,14 +575,53 @@ function ampcSoundOffsets(S,o,info){
  for(const guid of refs){const off=byGuid.get(guid);if(off==null)throw'AMPC bank @'+o.toString(16)+' references sound GUID '+guid+' which is not present in '+(S.wadName||'the source LCS');if(!out.includes(off))out.push(off)}
  return out;
 }
-// where the audio of the banks being copied goes in the target's PCA; add() returns the new stream offset for the copied bank
+// An AMPC cue list (ampz, after its 'Music' marker) names the music cues;
+// amrf contains GUID references to their WAVE/WAVS resources. Do not assume
+// cue order equals GUID order: some volumes reorder the cue strings, and the
+// Moon Base bank contains extra Odor variants beyond its five named cues.
+function ampcTracks(S,o){
+ const riff=riffChunks(S.A,o);if(!riff||riff.kind!=='AMPC')throw'AMPC bank @'+o.toString(16)+' is malformed';
+ const strings=[];
+ for(const ch of riff.chunks.ampz||[]){let start=ch.at;for(let p=ch.at;p<=ch.at+ch.n;p++)if(p===ch.at+ch.n||S.A[p]===0){if(p>start){const bytes=S.A.subarray(start,p);if(bytes.length<=160&&bytes.every(x=>x>=32&&x<127))strings.push(String.fromCharCode(...bytes))}start=p+1}}
+ const marker=strings.findIndex(x=>x.toLowerCase()==='music'),cueNames=marker<0?[]:strings.slice(marker+1).filter(Boolean);
+ const refs=ampcSoundOffsets(S,o),assets=refs.map(off=>{const b=parseBank(S.A,off),info=bankInfo(S.A,off);if(!b||!info)return null;const full=String(b.name||''),file=full.split(/[\\/]/).pop(),stem=file.replace(/\.[^.]*$/,'');return{off,kind:info.kind,name:full,file,stem,samples:b.samples||0,len:info.len}}).filter(Boolean);
+ const norm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+ const used=new Set(),tracks=cueNames.map(cueName=>{
+  const key=norm(cueName),exact=assets.filter(a=>norm(a.stem)===key),asset=exact.length===1?exact[0]:null;
+  if(asset)used.add(asset.off);
+  const related=asset?assets.filter(a=>a.off!==asset.off&&norm(a.stem).startsWith(key)&&/^\d/.test(norm(a.stem).slice(key.length))):[];
+  return{cueName,bankOff:asset?asset.off:null,bankName:asset?asset.name:null,kind:asset?asset.kind:null,samples:asset?asset.samples:0,len:asset?asset.len:0,related:related.map(a=>({off:a.off,name:a.name,kind:a.kind})),ambiguous:exact.length>1,replaceable:!!asset&&!related.length};
+ });
+ return{cueNames,tracks,unmapped:assets.filter(a=>!used.has(a.off)).map(a=>({off:a.off,name:a.name,kind:a.kind,samples:a.samples,len:a.len}))};
+}
+// Convert and append user-imported audio as a game-native RIFF descriptor plus PCA stream.
+function soundBase64Bytes(text){if(typeof text!=='string'||!text)throw'custom sound has no encoded ADPCM data';const bin=atob(text),out=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)out[i]=bin.charCodeAt(i);return out}
+function makeCustomSoundBank(asset,streamOff,streamLen){
+ if(!asset||!['WAVE','WAVS'].includes(asset.kind))throw'custom sound must target a WAVE or WAVS bank';
+ const channels=+asset.channels,rate=+asset.sampleRate,samples=+asset.samples;
+ if((channels!==1&&channels!==2)||!Number.isInteger(rate)||rate<8000||rate>48000||!Number.isInteger(samples)||samples<1)throw'custom sound metadata is invalid';
+ const guidHex=String(asset.guid||'');if(!/^[0-9a-f]{32}$/i.test(guidHex))throw'custom sound GUID is invalid';
+ const guid=Uint8Array.from(guidHex.match(/../g),x=>parseInt(x,16));
+ const bankName=String(asset.bankName||'custom_sound.wav');if(!/^[ -~]{1,48}$/.test(bankName))throw'custom sound bank name must be printable ASCII';
+ const blockAlign=36*channels,fmt=new Uint8Array(20),fd=new DataView(fmt.buffer);
+ fd.setUint16(0,0x0069,true);fd.setUint16(2,channels,true);fd.setUint32(4,rate,true);fd.setUint32(8,Math.round(rate*blockAlign/64),true);fd.setUint16(12,blockAlign,true);fd.setUint16(14,4,true);fd.setUint16(16,2,true);fd.setUint16(18,64,true);
+ const u32=x=>{const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,x>>>0,true);return b};
+ const chunk=(tag,body)=>{const out=new Uint8Array(8+body.length+(body.length&1));for(let i=0;i<4;i++)out[i]=tag.charCodeAt(i);new DataView(out.buffer).setUint32(4,body.length,true);out.set(body,8);return out};
+ const nameBytes=new TextEncoder().encode(bankName+'\0');
+ const chunks=[chunk('guid',guid),chunk('name',nameBytes),chunk('fmt ',fmt),chunk('fact',u32(samples)),chunk('strm',new Uint8Array([...u32(streamOff),...u32(streamLen)]))];
+ const total=12+chunks.reduce((n,b)=>n+b.length,0),out=new Uint8Array(total),d=new DataView(out.buffer);
+ out.set([82,73,70,70],0);d.setUint32(4,total-8,true);for(let i=0;i<4;i++)out[8+i]=asset.kind.charCodeAt(i);let at=12;for(const b of chunks){out.set(b,at);at+=b.length}return out;
+}
+// where the audio of banks goes in the target's PCA; add() copies an existing stream, addCustom() inserts encoded project audio.
 function SoundPlan(h78,h7c){const p={h78,h7c,h78_0:h78,h7c_0:h7c,adds:[],seen:new Map(),add(r){const key=r.w+'|'+r.kind+'|'+r.off+'|'+r.len;if(p.seen.has(key))return p.seen.get(key);let n;
   if(r.kind==='WAVE'){n=p.h78;p.h78+=r.len}else if(r.kind==='WAVS'){n=p.h7c;p.h7c+=Math.ceil(r.len/0x800)*0x800}else throw'sound bank type '+r.kind+' is not supported';
-  p.adds.push({...r,newOff:n});p.seen.set(key,n);return n}};return p}
+  p.adds.push({...r,newOff:n});p.seen.set(key,n);return n},addCustom(asset){const key='custom|'+asset.id;if(p.seen.has(key))return p.seen.get(key);const data=soundBase64Bytes(asset.adpcm),kind=asset.kind;if(data.length===0||data.length%(36*(+asset.channels)))throw'custom sound ADPCM stream is not block-aligned';let n;
+  if(kind==='WAVE'){n=p.h78;p.h78+=data.length}else if(kind==='WAVS'){n=p.h7c;p.h7c+=Math.ceil(data.length/0x800)*0x800}else throw'custom sound storage type '+kind+' is not supported';
+  const place={off:n,len:data.length,kind};p.adds.push({kind,off:n,len:data.length,newOff:n,data,customId:asset.id});p.seen.set(key,place);return place}};return p}
 // new PCA bytes: old resident block + copied WAVE data, then the streamed block (moved to the new aligned base) + copied WAVS data. src(w)->{pca,h78} of the level the sound comes from
 function buildPca(old,plan,src){const al=x=>Math.ceil(x/0x800)*0x800,oldBase=al(plan.h78_0),newBase=al(plan.h78),size=Math.max(old.length,Math.ceil((newBase+plan.h7c)/0x8000)*0x8000),out=new Uint8Array(size);
  out.set(old.subarray(0,plan.h78_0),0);out.set(old.subarray(oldBase,oldBase+plan.h7c_0),newBase);
- for(const a of plan.adds){const s=src(a.w);if(!s)throw'sound source '+a.w+' not found';const from=a.kind==='WAVE'?a.off:al(s.h78)+a.off;if(from+a.len>s.pca.length)throw'sound data of '+a.w+' is outside its .PCA';out.set(s.pca.subarray(from,from+a.len),a.kind==='WAVE'?a.newOff:newBase+a.newOff)}
+ for(const a of plan.adds){const to=a.kind==='WAVE'?a.newOff:newBase+a.newOff;if(a.data instanceof Uint8Array){out.set(a.data,to);continue}const s=src(a.w);if(!s)throw'sound source '+a.w+' not found';const from=a.kind==='WAVE'?a.off:al(s.h78)+a.off;if(from+a.len>s.pca.length)throw'sound data of '+a.w+' is outside its .PCA';out.set(s.pca.subarray(from,from+a.len),to)}
  return out}
 function parseBank(A,o){const d=new DataView(A.buffer,A.byteOffset,A.length);if(o+12>A.length||d.getUint32(o,true)!==0x46464952)return null;const tot=d.getUint32(o+4,true)+8,ch={};let p=o+12;
  while(p+8<=o+tot&&p+8<=A.length){const id=String.fromCharCode(A[p],A[p+1],A[p+2],A[p+3]),n=d.getUint32(p+4,true);ch[id]={at:p+8,n};p+=8+n+(n&1)}
@@ -803,6 +883,6 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
  const membershipConflicts=out.filter(M=>M.modelMembershipConflict).length;
  out.modelGroups=modelGroups;out.modelGroupById=groupById;out.modelMembershipConflicts=membershipConflicts;out.modelRefCount=modelRefs.length;out.modelIndirectRefs=modelRefs.indirectAdded||0;out.modelGraph={chainEdges,possibleNodeEdges,scriptDescriptors:[...scriptDescriptorRoles],descriptorCandidateCount:descriptorCandidates.length,ownerLinked:ownerOf.size,ownerMismatches,policy:'all evidence retained; primary membership is prioritised, never first-claim ownership'};
  return out}
-return{fnv,deflate,packWad,patchLcs,healResDir,SoundPlan,buildPca,bankInfo,riffChunks,ampcSoundOffsets,rebuildVol,prefabCheck,referrers,parseModels,classReports,KN,parseBank,ResIndex,resResolver,SrcCtx,classify,dataClosure,canon,Builder,copyData,copyGraph,mergeB,copierSelfTest,groupOf,transplantClasses}})();
+return{fnv,deflate,packWad,patchLcs,healResDir,SoundPlan,buildPca,bankInfo,riffChunks,ampcSoundOffsets,ampcTracks,rebuildVol,prefabCheck,referrers,parseModels,classReports,KN,parseBank,ResIndex,resResolver,SrcCtx,classify,dataClosure,canon,Builder,copyData,copyGraph,mergeB,copierSelfTest,groupOf,transplantClasses}})();
 
 export { EC };

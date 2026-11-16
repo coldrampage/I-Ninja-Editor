@@ -61,7 +61,7 @@ assert.equal(projectLoadHooks, 3, 'legacy project open refreshes dependent proje
 
 
 // Verify the project download payload includes the cross-level favourites library.
-const savedProject = { ...project, wads: { '10-00.LCS': { mods: { '5': { trigger: { ty: 4, box: [-2, -2, -2, 2, 2, 2], poly: null }, path: [[-1, 0, 2], [-1, 0, 2], [4, 0, -3]], pathMap: [0, 0, 1] } }, adds: [], del: [] } }, prefabs: [
+const savedProject = { ...project, audioAssets: { customSfx: { id: 'customSfx', kind: 'WAVE', adpcm: 'AAECAw==' }, customMusic: { id: 'customMusic', kind: 'WAVS', isMusic: true, adpcm: 'BAUGBw==' } }, wads: { '10-00.LCS': { music: { 4096: 'customMusic' }, mods: { '5': { trigger: { ty: 4, box: [-2, -2, -2, 2, 2, 2], poly: null }, path: [[-1, 0, 2], [-1, 0, 2], [4, 0, -3]], pathMap: [0, 0, 1] } }, adds: [], del: [] } }, prefabs: [
   { id: 2, name: 'Ranx shield', from: { w: '10-00.LCS', i: 12 }, includeLinked: true }
 ] };
 project = savedProject;
@@ -75,10 +75,12 @@ volReady = true;
 elements.ed_save.onclick();
 const exportedProject = JSON.parse(downloadedText);
 assert.deepEqual(exportedProject.prefabs, savedProject.prefabs, 'Save project JSON includes the prefab favourites library');
+assert.deepEqual(exportedProject.audioAssets, savedProject.audioAssets, 'Save project JSON includes imported audio assets intentionally as project content');
+assert.deepEqual(exportedProject.wads['10-00.LCS'].music, savedProject.wads['10-00.LCS'].music, 'Save project JSON includes the music-bank replacement map');
 assert.deepEqual(exportedProject.wads['10-00.LCS'].mods['5'].trigger, savedProject.wads['10-00.LCS'].mods['5'].trigger, 'Save project JSON retains trigger overrides');
 assert.deepEqual(exportedProject.wads['10-00.LCS'].mods['5'].path, savedProject.wads['10-00.LCS'].mods['5'].path, 'Save project JSON retains waypoint path overrides');
 assert.deepEqual(exportedProject.wads['10-00.LCS'].mods['5'].pathMap, savedProject.wads['10-00.LCS'].mods['5'].pathMap, 'Save project JSON retains the source-node template map for inserted waypoints');
 assert.match(elements.ed_sum.textContent, /1 prefab favourite/);
 
-console.log('PASS project save payload includes the prefab favourites library');
+console.log('PASS project save payload includes the prefab favourites library, imported audio assets and music replacement mapping');
 console.log('PASS project save payload retains trigger, waypoint path and source-node template overrides as per-entity modifications');

@@ -7,6 +7,6 @@ assert.match(ui,/function summary\(\)\s*\{/,'summary service is defined in coord
 assert.match(ui,/function rmList\(\)\s*\{/,'removed-entity list service is defined in coordinator');
 assert.match(ui,/installModelEditor\(\{[^}]*summary/s,'summary is injected into Models module');
 assert.match(ui,/installEntityEditor\(\{[^}]*summary,\s*rmList/s,'summary and rmList are injected into Entity Editor');
-assert.match(ent,/function update\(\)\s*\{\s*summary\(\);\s*rmList\(\);/,'Entity Editor invokes injected shared services');
+assert.match(ent,/function update\(\)\s*\{[\s\S]{0,180}summary\(\);\s*rmList\(\);/,'Entity Editor invokes injected shared services after preview/cache cleanup');
 assert.match(models,/summary\(\)/,'Models module invokes injected summary service');
 console.log('shared UI services smoke test passed');

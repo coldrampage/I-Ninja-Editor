@@ -61,6 +61,8 @@ let html = element('ed_sel').innerHTML;
 assert.match(html, /localised dialogue \/ audio table/, 'Sensei dialogue registers display as linked text/audio tables');
 assert.match(html, /data-text-slot=/, 'localised text fields are editable');
 assert.match(html, /data-sound-slot=/, 'voice pointers are editable sound links');
+assert.match(html, /data-sound-preview/, 'voice sound dropdowns include an adjacent play/pause preview button');
+assert.match(html, /data-sound-bank-off=\"\d+\"/, 'preview buttons resolve the selected sound bank inside the source LCS');
 assert.match(html, /sen_ForestHUB1_eng_01\.wav/, 'sound dropdown resolves its current sound-bank name');
 assert.match(html, /Debug Text On/, 'text-only R3 table is resolved rather than shown as an address');
 

@@ -2,17 +2,17 @@
 // Parser, editor, assembler, and viewer APIs are imported directly.
 import {
   parseVol, readWad, r2, siWad, instances, fixups
-} from './vol-core.js';
-import { EC } from './editor-core.js?v=step32-register-links';
+} from './vol-core.js?v=step39-enemy-generator-links';
+import { EC } from './editor-core.js?v=step39-enemy-generator-links';
 import { IA } from './strat-assembler.js';
 import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step30-turret-waypoint-reuse';
 import { installModelEditor } from './models-panel.js?v=step30-turret-waypoint-reuse';
 import { installScriptEditor } from './script-editor.js';
 import { installTexturePanel } from './textures-panel.js';
 import { installTintUi } from './class-tint.js';
-import { installProjectManager } from './project-manager.js?v=step14-camera-source-variants';
-import { installEntityEditor } from './entity-editor.js?v=step32-register-links';
-import { installPrefabManager } from './prefabs.js?v=step30-turret-waypoint-reuse';
+import { installProjectManager } from './project-manager.js?v=step38-music-preview-replacement';
+import { installEntityEditor } from './entity-editor.js?v=step39-enemy-generator-links';
+import { installPrefabManager } from './prefabs.js?v=step39-enemy-generator-links';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
 // properties are published on window.
@@ -21,11 +21,17 @@ import { installPrefabManager } from './prefabs.js?v=step30-turret-waypoint-reus
 // ---- editor UI: edits live in a project (json); the game files are never modified, a patched copy is built on demand
 (()=>{
 let PRJ={app:'ininja-editor',v:1,vol:null,wads:{},prefabs:[]},volName='vol',AVLS={},WC={},inR=0;
+// Full .avl archives are a RAM-only working cache. Keep it bounded; individual
+// PCA streams needed for a build are copied into a short-lived build-local map.
+const AVL_CACHE_LIMIT=192*1024*1024;let avlCacheBytes=0,avlClock=0;
+function evictAvlCache(exceptKey){while(avlCacheBytes>AVL_CACHE_LIMIT){let oldestKey=null,oldest=null;for(const[k,a]of Object.entries(AVLS))if(k!==exceptKey&&a.buf&&(!oldest||((a.lastUse||0)<(oldest.lastUse||0)))){oldestKey=k;oldest=a}if(!oldest)break;avlCacheBytes=Math.max(0,avlCacheBytes-oldest.buf.byteLength);oldest.buf=null;oldest.list=null;oldest.lastUse=0}}
+function clearAvlCache(){for(const a of Object.values(AVLS)){a.buf=null;a.list=null;a.loading=null;a.lastUse=0}AVLS={};avlCacheBytes=0;WC={}}
 let resetModelCaches=()=>{},buildScriptWadsFp=()=>({}),edUpdate=()=>{},rec=()=>null,ground=()=>null,srcEnt=()=>null;
 
 // Create the editor panel before installing feature handlers. The entity editor
 // owns the live inspector contents, while this coordinator owns the shared
 // project/prefab controls; prefabs.js attaches its own handlers after insertion.
+globalThis.addEventListener('pagehide',clearAvlCache,{once:true});
 const ui=document.createElement('div');ui.id='ed';
 ui.innerHTML='<hr><b>Editor</b> <span class=h>edits go in a project file; game files are never touched</span><details style="margin:3px 0"><summary class=h>current scope</summary><div class=h><b>Rotation:</b> yaw, pitch and roll are editable. Yaw turns about world up; pitch (local X) and roll (local Z) are applied on top of the original orientation and shown as changes from it.<br><b>No LCM edits:</b> only .LCS strat data can be edited. The project format is per-wad, so LCM edits can slot in later.</div></details><div style="margin:3px 0"><button id=ed_open>open project</button> <button id=ed_save>save project</button> <button id=ed_patch>build patched .vol</button> <button id=ed_md>models</button> <button id=ed_tx>textures</button> <button id=ed_stb>copier self-test</button></div><input type=file id=ed_pf style=display:none accept=.json><div id=ed_sum class=h></div><div id=ed_rm class=h></div><div id=ed_sel class=h>click an entity to edit it</div>'
   +'<div style="margin-top:4px"><span class=h>add prefab to</span> <select id=ed_lv style="max-width:90px"></select> <select id=ed_cl style="max-width:170px"></select> <button id=ed_add>add</button><br><label class=h title="A spawner links to the objects it spawns. Tick this to copy those objects too, as separate objects that link to each other, so the copy spawns its own set."><input type=checkbox id=ed_deep> also copy the objects it links to</label></div>'
@@ -162,7 +168,21 @@ async function ensureSourceArchives(favorite,{targetW}={}){
  prefabManager.invalidateChecks();
 }
 // the .avl is only read when a patched one has to be built
-async function avlLoad(v){const a=AVLS[vbase(v)];if(!a)throw'no '+vbase(v)+'.avl loaded (it holds the sounds of '+v+')';if(!a.buf){a.buf=await a.file.arrayBuffer();a.list=parseVol(a.buf)}return a}
+async function avlLoad(v){const key=vbase(v),a=AVLS[key];if(!a)throw'no '+key+'.avl loaded (it holds the sounds of '+v+')';if(!a.buf){if(!a.loading)a.loading=(async()=>{const buf=await a.file.arrayBuffer(),list=parseVol(buf);a.buf=buf;a.list=list;avlCacheBytes+=buf.byteLength})().finally(()=>{a.loading=null});await a.loading}a.lastUse=++avlClock;evictAvlCache(key);return a}
+// Read the source level's matching PCA stream for in-inspector audio previews.
+// WAVE offsets are resident-block-relative; WAVS offsets start after the
+// resident block rounded up to 0x800, matching SoundPlan/buildPca below.
+async function getAudioPca(wadName){
+ const f=Viewer.files.find(x=>x.name.toLowerCase()===String(wadName).toLowerCase());
+ if(!f)throw'level '+wadName+' is not loaded';
+ const volume=f.vol||volOf(wadName);if(!volume)throw'cannot identify the volume containing '+wadName;
+ const a=await avlLoad(volume),pcaName=String(wadName).replace(/\.LCS$/i,'.PCA');
+ const entry=a.list.find(x=>x.name.toLowerCase()===pcaName.toLowerCase());
+ if(!entry)throw'no '+pcaName+' audio file in '+vbase(volume)+'.avl';
+ const header=new DataView(f.buf,f.off),h78=header.getUint32(0x78,true);
+ if(!Number.isInteger(entry.off)||!Number.isInteger(entry.size)||entry.off<0||entry.size<=0||entry.off+entry.size>a.buf.byteLength)throw pcaName+' has an invalid archive range';
+ return {pca:new Uint8Array(a.buf,entry.off,entry.size).slice(),h78};
+}
 // Sound resources live in the .PCA inside a paired .avl. Both prefab dependency
 // checks and patched VOL/AVL export use the same target-level sound plan.
 const sndPlan=w=>{if(!avlOk(volOf(w)))return undefined;const f=Viewer.files.find(x=>x.name===w);if(!f)return undefined;const dv=new DataView(f.buf,f.off),p=EC.SoundPlan(dv.getUint32(0x78,true),dv.getUint32(0x7c,true)),add=p.add;p.add=r=>{const sv=volOf(r.w);if(!avlOk(sv))throw'its sounds come from '+r.w+' and need '+vbase(sv)+'.avl loaded';return add(r)};return p};
@@ -179,7 +199,7 @@ const unzero=m=>m.d.some(x=>x)||m.dy||m.dp||m.dr||Object.keys(m.regs||{}).length
 // Shared project status and removed-entity restoration UI. These stayed in the
 // coordinator when entity editing moved into entity-editor.js because Models
 // and Entity Editor both use them.
-function summary(){let m=0,a=0,n=0,r=0;for(const w in PRJ.wads){const x=Object.values(PRJ.wads[w].mods).filter(unzero).length,y=PRJ.wads[w].adds.length,z=(PRJ.wads[w].del||[]).length;m+=x;a+=y;r+=z;if(x||y||z)n++}Viewer.$('ed_sum').textContent=m+' moved/edited, '+a+' added, '+r+' removed in '+n+' level(s)'+(PRJ.prefabs&&PRJ.prefabs.length?', '+PRJ.prefabs.length+' prefab favourite(s)':'')+(Object.keys(PRJ.vols||{}).length>1?' ['+Object.keys(PRJ.vols).join(', ')+']':'')}
+function summary(){let m=0,a=0,n=0,r=0,mu=0;for(const w in PRJ.wads){const x=Object.values(PRJ.wads[w].mods).filter(unzero).length,y=PRJ.wads[w].adds.length,z=(PRJ.wads[w].del||[]).length,q=Object.keys(PRJ.wads[w].music||{}).length;m+=x;a+=y;r+=z;mu+=q;if(x||y||z||q)n++}Viewer.$('ed_sum').textContent=m+' moved/edited, '+a+' added, '+r+' removed, '+mu+' music replacement(s) in '+n+' level(s)'+(PRJ.prefabs&&PRJ.prefabs.length?', '+PRJ.prefabs.length+' prefab favourite(s)':'')+(Object.keys(PRJ.vols||{}).length>1?' ['+Object.keys(PRJ.vols).join(', ')+']':'')}
 function rmList(){const out=[];for(const lv of Viewer.D){const w=wadOf(lv.id),P=w&&PRJ.wads[w];if(!P||!lv.all0)continue;for(const i of P.del||[])if(lv.all0[i])out.push([w,i,lv.all0[i].n,lv.id])}
  Viewer.$('ed_rm').innerHTML=out.length?'removed: '+out.slice(0,12).map(([w,i,n,L])=>L+'#'+i+' '+Viewer.esc(n)+' <a href=# data-w="'+w+'" data-i='+i+'>restore</a>').join(' &middot; ')+(out.length>12?' &hellip;':''):'';
  Viewer.$('ed_rm').querySelectorAll('a').forEach(a=>a.onclick=e=>{e.preventDefault();const P=PRJ.wads[a.dataset.w];P.del=P.del.filter(x=>x!=+a.dataset.i);Viewer.refresh()})}
@@ -257,7 +277,7 @@ const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setP
 
 const entityEditor=installEntityEditor({
   Viewer,EC,getProject:()=>PRJ,wadOf,getWad,WS,base,put,unzero,srcEnt,
-  addMaxId:prefabManager.addMaxId,ensureClass:prefabManager.ensureClass,pushAdds:prefabManager.pushAdds,stripLinkRegs:prefabManager.stripLinkRegs,summary,rmList,r3,setTriggerOverlayRender,setPathOverlayRender
+  addMaxId:prefabManager.addMaxId,ensureClass:prefabManager.ensureClass,pushAdds:prefabManager.pushAdds,stripLinkRegs:prefabManager.stripLinkRegs,summary,rmList,r3,getAudioPca,setTriggerOverlayRender,setPathOverlayRender
 });
 edUpdate=entityEditor.update;
 rec=entityEditor.rec;

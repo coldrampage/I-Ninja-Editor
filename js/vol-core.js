@@ -31,7 +31,7 @@ function instances(A,B){const imp=fixups(B),h=(imp[0x8000010e]||[])[0];if(h==nul
  const ins=rd(h+0x28),nin=d.getUint16(h+0x30,true),ents=[];
  for(let i=0;i<nin;i++){const o=ins+i*0x3c;if(o+0x3c>n)break;
   const cp=rd(o+0x28),name=(cp&&cstr(A,null,rd(cp+4)))||'?',ninit=cp>0&&cp+0x1c<=n?d.getUint16(cp+0x18,true):0,ip=rd(o+0x2c);
-  const params=[];if(ip>0&&ip+4*ninit<=n)for(let k=0;k<Math.min(ninit,12);k++){const v=rd(ip+4*k),isp=rel.has(ip+4*k);params.push({v,s:isp?(cstr(A,null,v)||null):null})}
+  const params=[];if(ip>0&&ip+4*ninit<=n){const paramLimit=name==='EnemyGenerator'?Math.min(ninit,27):Math.min(ninit,12);for(let k=0;k<paramLimit;k++){const v=rd(ip+4*k),isp=rel.has(ip+4*k);params.push({v,s:isp?(cstr(A,null,v)||null):null})}}
   // load targets: string params like "20-23", or the int area code of *NextArea (2024 = 20-24)
   const to=[];for(const p of params)if(p.s&&/^\d+-\d+$/.test(p.s))to.push(p.s);
   if(/NextArea/.test(name)&&params[0]&&!params[0].s&&params[0].v>=1000&&params[0].v<3000)to.push(Math.floor(params[0].v/100)+'-'+String(params[0].v%100).padStart(2,'0'));
