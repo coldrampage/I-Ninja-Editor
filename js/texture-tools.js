@@ -8,8 +8,8 @@
 //
 // A project stores the user's own TGA bytes (base64) per wad, never any original game data:
 //   textures: [{op:'replace', tex:<object offset>, tga:<base64>}, {op:'add', id:'name', tga:<base64>, assign:[<draw-part offsets>]}]
-import { EC } from './editor-core.js';
-import { fixups, parseTga } from './vol-core.js';
+import { EC } from './editor-core.js?v=step43-native-layer-uv';
+import { fixups, parseTga, parseMaterialResources } from './vol-core.js?v=step43-native-layer-uv';
 
 const isPow2 = n => n > 0 && (n & (n - 1)) === 0;
 const MIN_DIM = 4, MAX_DIM = 512;
@@ -111,8 +111,11 @@ function applyTextureOps(A0, B0, ops) {
 // texture objects of a wad with sizes, for the UI list
 function listTextures(A, B) {
   const imp = fixups(B), d = new DataView(A.buffer, A.byteOffset, A.length), out = [];
-  for (const t of imp[0x80000001] || []) { const w = d.getUint32(t + 4, true), h = d.getUint32(t + 8, true), x = parseTga(A, t); out.push({ off: t, w, h, tgaLen: d.getUint32(t + 0x14, true), img: x }); }
+  for (const t of imp[0x80000001] || []) { if(t<0||t+0x20>A.length)continue;const w = d.getUint32(t + 4, true), h = d.getUint32(t + 8, true), x = parseTga(A, t); out.push({ off: t, w, h, tgaLen: d.getUint32(t + 0x14, true), img: x }); }
   return out.sort((a, b) => a.off - b.off);
 }
 
-export { quantize, encodeTga, tgaInfo, applyTextureOps, listTextures, isPow2 };
+// Kind-6 animation and kind-7 layered-material wrappers, retained as separate assets.
+function listMaterialResources(A, B) { return parseMaterialResources(A, B); }
+
+export { quantize, encodeTga, tgaInfo, applyTextureOps, listTextures, listMaterialResources, isPow2 };

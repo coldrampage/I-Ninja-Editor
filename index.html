@@ -30,6 +30,8 @@
 <button id=fit>fit (F)</button> <button id=top>top (T)</button>
 <label><input type=checkbox id=gm checked> level geometry</label>
 <div>&nbsp;&nbsp;<input type=checkbox id=tx checked> <label for=tx style="display:inline">textures</label> &nbsp;<input type=checkbox id=vc checked> <label for=vc style="display:inline">vertex colours</label></div>
+<label>&nbsp;&nbsp;<input type=checkbox id=ma checked> material animation &amp; layers <span class=h>(preview)</span></label>
+<div class=h>&nbsp;&nbsp;Approximate 60 Hz frame stepping; estimated kind-7 UV/s scrolling + RGBA tint. Unknown layer mode/rotation words are not applied.</div>
 <label>&nbsp;&nbsp;<input type=checkbox id=wf> wireframe</label>
 <label>&nbsp;&nbsp;brightness <input type=range id=br min=.5 max=4 step=.1 value=2></label>
 <label>collision mesh <select id=cm><option value=off>off<option value=wire>wire<option value=solid>solid<option value=ghost>ghost</select></label>
@@ -57,4 +59,4 @@
 <div id=insp></div><div id=tip></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="js/three-fallback.js"></script>
-<script type="module" src="js/bootstrap.js?v=step38-music-preview-replacement"></script>
+<script type="module" src="js/bootstrap.js?v=step43-native-layer-uv"></script>

@@ -2,13 +2,13 @@
 // Parser, editor, assembler, and viewer APIs are imported directly.
 import {
   parseVol, readWad, r2, siWad, instances, fixups
-} from './vol-core.js?v=step39-enemy-generator-links';
-import { EC } from './editor-core.js?v=step39-enemy-generator-links';
+} from './vol-core.js?v=step43-native-layer-uv';
+import { EC } from './editor-core.js?v=step43-native-layer-uv';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step30-turret-waypoint-reuse';
-import { installModelEditor } from './models-panel.js?v=step30-turret-waypoint-reuse';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step43-native-layer-uv';
+import { installModelEditor } from './models-panel.js?v=step43-native-layer-uv';
 import { installScriptEditor } from './script-editor.js';
-import { installTexturePanel } from './textures-panel.js';
+import { installTexturePanel } from './textures-panel.js?v=step43-native-layer-uv';
 import { installTintUi } from './class-tint.js';
 import { installProjectManager } from './project-manager.js?v=step38-music-preview-replacement';
 import { installEntityEditor } from './entity-editor.js?v=step39-enemy-generator-links';

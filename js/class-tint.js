@@ -9,9 +9,9 @@
 //        L_tint_<entry>:
 //      The prologue goes into the same code block text the Scripts tab edits, so it is relinked with any code edits the project has.
 // The project stores only  tints: { <wad>: { inst: { "<instance index>": [r,g,b] } } }.
-import { EC } from './editor-core.js';
+import { EC } from './editor-core.js?v=step43-native-layer-uv';
 import { IA } from './strat-assembler.js';
-import { siWad, fixups } from './vol-core.js';
+import { siWad, fixups } from './vol-core.js?v=step43-native-layer-uv';
 
 const MAGIC = 4411212; // 0x434F4C: a flag value garbage registers will not normally hold
 const EXTRA = 4;

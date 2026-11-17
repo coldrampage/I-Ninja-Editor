@@ -1,14 +1,14 @@
 // Textures panel: browse a level wad's textures, export one as PNG, replace it with your own image, or add a brand-new texture.
 // Edits are stored in the project as base64 TGA (your pixels only) under project.textures[wad].ops and applied by "build patched .vol".
-import { listTextures, encodeTga, isPow2 } from './texture-tools.js';
-import { parseTga, setTexOverride, clearTexOverrides, setTexMode, clearTexModes } from './vol-core.js';
+import { listTextures, listMaterialResources, encodeTga, isPow2 } from './texture-tools.js?v=step43-native-layer-uv';
+import { parseTga, setTexOverride, clearTexOverrides, setTexMode, clearTexModes } from './vol-core.js?v=step43-native-layer-uv';
 
 export function installTexturePanel({ Viewer, getProject, getWad, onChange = () => {} }) {
   const $ = id => document.getElementById(id);
   const panel = document.createElement('div');
   panel.id = 'tx_panel';
   panel.style.cssText = 'position:fixed;left:262px;bottom:10px;width:560px;max-height:80vh;overflow:auto;background:#1b1e24f2;border:1px solid #444;padding:6px;display:none;z-index:21;font-size:12px';
-  panel.innerHTML = '<b>Textures</b> <span class=h>replace or add images; stored in the project, applied when you build the patched .vol</span> <button id=tx_x style=float:right>x</button><br>'
+  panel.innerHTML = '<b>Textures</b> <span class=h>replace or add images; inspect animated and layered material wrappers</span> <button id=tx_x style=float:right>x</button><br>'
     + '<select id=tx_w style="width:100%"></select>'
     + '<div style="margin:4px 0"><label title="Resample your image to the size of the texture it replaces. Safest: the model\'s UVs and the file layout stay exactly as in the original."><input type=checkbox id=tx_keep checked> replace at the original size</label> '
     + '<select id=tx_mode title="palette = 8-bit, up to 256 colours, like the game\'s own textures. truecolour = 32-bit, 4x bigger."><option value=palette>256-colour palette<option value=truecolour>32-bit truecolour</select></div>'
@@ -18,10 +18,11 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
     + '<div id=tx_sel class=h style="margin:4px 0">click a texture</div>'
     + '<div><button id=tx_exp disabled>export PNG</button> <button id=tx_rep disabled>replace with image…</button> <button id=tx_add>add new texture from image…</button> <button id=tx_undo disabled>revert this texture</button></div>'
     + '<input id=tx_file type=file accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" style=display:none>'
-    + '<div id=tx_ops class=h style="white-space:pre-wrap;margin-top:4px"></div>';
+    + '<div id=tx_ops class=h style="white-space:pre-wrap;margin-top:4px"></div>'
+    + '<div style="margin-top:8px;border-top:1px solid #444;padding-top:6px"><b>Animated &amp; layered resources</b> <span class=h>kind 6 / kind 7; inspection only</span><select id=tx_res style="width:100%;margin-top:4px" disabled><option value="">No resources loaded</option></select><div id=tx_res_info class=h style="max-height:310px;overflow:auto;margin-top:5px">Choose a resource to inspect its frames or layers.</div></div>';
   document.body.appendChild(panel);
 
-  let list = [], cur = null, mode = null; // mode: 'replace' | 'add'
+  let list = [], cur = null, mode = null, resources = []; // mode: 'replace' | 'add'
   const shown = new Map(); // wad -> Set(texture offsets currently previewed from the project)
   const modeShown = new Map(); // wad -> Set(texture offsets whose display mode was applied)
   const modes = w => { const D = getProject().display; return (D && D[w]) || {}; };
@@ -62,6 +63,68 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
     c.style.imageRendering = 'pixelated'; return c;
   }
 
+  const hex = n => '0x' + (Number(n) >>> 0).toString(16).padStart(8, '0');
+  const ftxt = n => Number.isFinite(n) ? Number(n).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') : 'not a finite float';
+  const axisModeName = n => ({0:'linear',1:'sine',2:'cosine'}[n] || ('unknown (' + n + ')'));
+  function addInfoLine(host, text, strong = false) {
+    const el = document.createElement('div'); el.textContent = text; if (strong) el.style.fontWeight = 'bold'; host.appendChild(el); return el;
+  }
+  function showResource(r) {
+    const host = $('tx_res_info'); host.innerHTML = '';
+    const g = wad() && getWad(wad());
+    if (!r) { addInfoLine(host, 'Choose a resource to inspect its frames or layers.'); return; }
+    addInfoLine(host, (r.type === 'animated' ? 'Animated texture' : 'Layered material') + ' @' + hex(r.offset), true);
+    if (!r.valid) { addInfoLine(host, 'Could not decode this wrapper: ' + r.error); return; }
+    if (r.type === 'animated') {
+      addInfoLine(host, r.frameCount + ' frames · animation data @' + hex(r.animationDataOffset) + ' · frame pointer array @' + hex(r.frameArrayOffset));
+      addInfoLine(host, 'Frame selection is manual in this inspector. The level viewport uses 60 Hz preview stepping; the exact native frame-selector formula is still under investigation.');
+      const picker = document.createElement('select'); picker.style.width = '100%'; picker.style.margin = '4px 0';
+      r.frameOffsets.forEach((off, i) => { const op = document.createElement('option'); op.value = String(i); op.textContent = 'Frame ' + (i + 1) + '/' + r.frameCount + ' · texture @' + hex(off); picker.appendChild(op); });
+      const preview = document.createElement('div'); preview.style.cssText = 'display:flex;align-items:flex-start;gap:8px;margin-top:4px';
+      const drawFrame = i => {
+        preview.innerHTML = ''; const off = r.frameOffsets[i], img = g && parseTga(g.A, off);
+        if (img) preview.appendChild(thumb(img, 144));
+        const meta = document.createElement('div'); meta.textContent = 'Frame ' + (i + 1) + ' · texture @' + hex(off) + (img ? ' · ' + img.w + '×' + img.h : ' · no decodable TGA'); preview.appendChild(meta);
+      };
+      picker.onchange = () => drawFrame(Math.max(0, Math.min(r.frameOffsets.length - 1, Number(picker.value) || 0)));
+      host.appendChild(picker); host.appendChild(preview); drawFrame(0);
+      addInfoLine(host, 'Wrapper words: ' + r.headerWords.map(hex).join(' '));
+    } else {
+      addInfoLine(host, 'Target ' + r.targetWidth + '×' + r.targetHeight + ' · ' + r.layerCount + ' layers · records @' + hex(r.layerRecordsOffset));
+      addInfoLine(host, 'U/V mode bytes are native UV motion selectors (0 linear, 1 sine, 2 cosine), not blend modes. Rotation remains a separate transform.');
+      r.layers.forEach(layer => {
+        const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:7px;padding:5px 0;border-top:1px solid #343943';
+        const img = g && layer.textureValid ? parseTga(g.A, layer.textureOffset) : null;
+        if (img) row.appendChild(thumb(img, 54));
+        const detail = document.createElement('div'); detail.style.minWidth = '0';
+        const color = layer.color.map(ftxt).join(', ');
+        detail.textContent = 'Layer ' + (layer.index + 1) + ' @' + hex(layer.offset) + '\n' +
+          'Texture ' + hex(layer.textureOffset) + (layer.textureValid ? '' : ' (not a kind-1 texture)') + '\n' +
+          'U ' + axisModeName(layer.uMode) + ' · value ' + ftxt(layer.uVelocity) + ' · frequency ' + ftxt(layer.uFrequency) + ' rad/s · phase ' + ftxt(layer.uOffset) + '\n' +
+          'V ' + axisModeName(layer.vMode) + ' · value ' + ftxt(layer.vVelocity) + ' · frequency ' + ftxt(layer.vFrequency) + ' rad/s · phase ' + ftxt(layer.vOffset) + '\n' +
+          'RGBA [' + color + '] · rotation rate ' + ftxt(layer.rotationVelocity) + ' · rotation phase ' + ftxt(layer.rotationOffset) + '\n' +
+          'mode word ' + hex(layer.modeRaw) + ' · raw +0x24 ' + hex(layer.value24Raw) + ' · raw +0x28 ' + hex(layer.value28Raw) + '\n' +
+          'Raw 16 words: ' + layer.rawWords.map(hex).join(' ');
+        detail.style.whiteSpace = 'pre-wrap'; detail.style.overflowWrap = 'anywhere'; row.appendChild(detail); host.appendChild(row);
+      });
+      addInfoLine(host, 'Wrapper words: ' + r.headerWords.map(hex).join(' '));
+    }
+  }
+  function fillResources() {
+    const w = wad(), g = w && getWad(w), keep = $('tx_res').value;
+    resources = g ? listMaterialResources(g.A, g.B) : [];
+    const sel = $('tx_res'); sel.innerHTML = '';
+    const first = document.createElement('option'); first.value = ''; first.textContent = resources.length ? 'Select an animated or layered resource…' : 'No kind-6 / kind-7 resources in this wad'; sel.appendChild(first);
+    for (const r of resources) {
+      const op = document.createElement('option'); op.value = String(r.offset);
+      op.textContent = (r.type === 'animated' ? 'Animated · ' + r.frameCount + ' frames' : 'Layered · ' + r.layerCount + ' layers') + ' · @' + hex(r.offset) + (r.valid ? '' : ' · invalid'); sel.appendChild(op);
+    }
+    sel.disabled = !resources.length;
+    const chosen = resources.find(r => String(r.offset) === keep) || null;
+    sel.value = chosen ? String(chosen.offset) : '';
+    showResource(chosen);
+  }
+
   function status() {
     const w = wad(), o = ops(w);
     $('tx_ops').textContent = o.length ? 'pending in project for ' + w + ':\n' + o.map(x => x.op === 'replace' ? ' replace @0x' + x.tex.toString(16) : ' add "' + x.id + '"').join('\n') : 'no texture edits for this wad yet';
@@ -78,8 +141,9 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
 
   function fill() {
     const w = wad(), g = w && getWad(w); $('tx_grid').innerHTML = ''; list = []; cur = null; $('tx_sel').textContent = 'click a texture'; $('tx_exp').disabled = $('tx_rep').disabled = $('tx_disp').disabled = true;
-    if (!g) { status(); return; }
+    if (!g) { fillResources(); status(); return; }
     list = listTextures(g.A, g.B);
+    fillResources();
     const rep = new Map(ops(w).filter(x => x.op === 'replace').map(x => [x.tex, x]));
     for (const t of list) {
       const img = t.img, r = rep.get(t.off); // t.img already shows the project's replacement (parse override)
@@ -101,6 +165,7 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
 
   $('tx_x').onclick = () => { panel.style.display = 'none'; };
   $('tx_w').onchange = fill;
+  $('tx_res').onchange = () => showResource(resources.find(r => String(r.offset) === $('tx_res').value) || null);
   $('tx_blk').onchange = fill;
   $('tx_disp').onchange = () => {
     if (!cur) return; const w = wad(), P = getProject(); P.display = P.display || {}; const m = P.display[w] = P.display[w] || {};

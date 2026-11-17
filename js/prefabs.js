@@ -1,4 +1,4 @@
-import { analyseStrats, siWad } from './vol-core.js';
+import { analyseStrats, siWad } from './vol-core.js?v=step43-native-layer-uv';
 
 // Prefab library, dependency checks, linked-child copying and cross-level moves.
 // Compare class dependency fingerprints and shared code-block membership rather

@@ -1,7 +1,7 @@
 import {
-  analyseStrats, SiAn, fixups, parseTga, parseVol,
+  analyseStrats, SiAn, fixups, parseTga, parseVol, parseMaterialResources,
   siCstr, siDisasm, siPrint, siWad
-} from './vol-core.js';
+} from './vol-core.js?v=step43-native-layer-uv';
 
 // ---- editor core (pure, no DOM). Its dependencies are explicit module imports.
 const EC=(()=>{
@@ -770,13 +770,15 @@ function prefabCheck(A,B,i){const imp=fixups(B),h=(imp[0x8000010e]||[])[0];if(h=
 // [5, vertexCount, indexCount, ptr, 0,0,0,0, verticesRemainingAfter, indicesRemainingAfter]; parts tile the vertex and index buffers exactly (index slice = indexCount+2 incl. stitch).
 function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes||!meshes.length)return[];
  const d=new DataView(A.buffer,A.byteOffset,A.length),U=o=>d.getUint32(o,true),F=o=>d.getFloat32(o,true),rd=o=>(o>=0&&o+4<=A.length)?U(o):0;
- const tex=new Set(imp[0x80000001]||[]),s6=new Set(imp[0x80000006]||[]),s7=new Set(imp[0x80000007]||[]);
- const res=(t,k=0)=>{if(tex.has(t))return t;if(k>4)return 0;if(s7.has(t))return res(rd(rd(t+16)),k+1);if(s6.has(t))return res(rd(rd(rd(t+16)+4)),k+1);return 0};
+ const tex=new Set(imp[0x80000001]||[]),materialResources=parseMaterialResources(A,B),materialByOffset=new Map(materialResources.map(x=>[x.offset,x]));
+ const res=(t,k=0)=>{if(tex.has(t))return t;if(k>4)return 0;const r=materialByOffset.get(t);if(!r||!r.valid)return 0;
+  if(r.type==='layered')return r.layers.length?res(r.layers[0].textureOffset,k+1):0;
+  if(r.type==='animated')return r.frameOffsets.length?res(r.frameOffsets[0],k+1):0;return 0};
  const parts=[...(imp[0x80000021]||[]),...(imp[0x80000022]||[])],tc={},out=[];
  // parts of one model: linked through the part->previous-part pointer (+0x44), through node records that list several parts side by side (parts of one big mesh are NOT merged: such a mesh holds many separate props)
  const pset=new Set(parts); // only part->previous-part links form a safe fallback component
  const inlineName=p=>{for(let o=p;o<Math.min(p+0x100,A.length);o++){let q=o;while(q<A.length&&((A[q]>=65&&A[q]<=90)||(A[q]>=97&&A[q]<=122)||(A[q]>=48&&A[q]<=57)||A[q]===32||A[q]===95||A[q]===46))q++;if(q-o>=4&&A[q]===0&&(o===p||A[o-1]===0||A[o-1]<32||A[o-1]>126))return String.fromCharCode(...A.subarray(o,q))}return''};
- const texOf=p=>{const tk=res(U(p+16));if(tk&&!(tk in tc))tc[tk]=parseTga(A,tk);return tk?tc[tk]:null};
+ const texOf=p=>{const materialOffset=U(p+16),texOffset=res(materialOffset);if(texOffset&&!(texOffset in tc))tc[texOffset]=parseTga(A,texOffset);return{tex:texOffset?tc[texOffset]:null,texOffset,materialOffset,material:materialByOffset.get(materialOffset)||null}};
  for(const m of meshes){const str=U(m+8),nv=U(m+12),vp=U(m+16),ni=U(m+20),ip=U(m+24);if(!nv||!ni||str<32||vp+nv*str>A.length||ip+ni*2>A.length)continue;
   const pos=new Float32Array(nv*3),nrm=new Float32Array(nv*3),uv=new Float32Array(nv*2);
   for(let i=0;i<nv;i++){const o=vp+str*i;for(let k=0;k<3;k++){pos[3*i+k]=F(o+4*k);nrm[3*i+k]=F(o+12+4*k)}uv[2*i]=F(o+24);uv[2*i+1]=F(o+28)}
@@ -785,8 +787,8 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
   const bbox=used=>{const mn=[1e9,1e9,1e9],mx=[-1e9,-1e9,-1e9];for(const v of used)for(let k=0;k<3;k++){const x=pos[3*v+k];if(x<mn[k])mn[k]=x;if(x>mx[k])mx[k]=x}return used.size?[mn,mx]:[[0,0,0],[0,0,0]]};
   const ps=parts.filter(p=>U(p+12)===m).sort((a,b)=>a-b);
   const info=ps.map(p=>{const a=U(p+0x20+24),cnt=U(p+0x1c+24);if(cnt<1||a<=0||a+40>A.length)return null;const vc=U(a+4),ic=U(a+8),rv=U(a+32),ri=U(a+36),is=ri;/* rv/ri are counted from the START (verified against a D3D draw capture: MinVertexIndex==rv, StartIndex==ri) */if(ri+ic+2>ni||rv+vc>nv)return null;return{p,vc,vs:rv,is,ic}});
-  if(!ps.length||info.some(x=>!x)){const s=slice(0,ni),p0=ps[0]||0;out.push({off:m,poff:p0,pk:0,np:Math.max(ps.length,1),name:p0?inlineName(p0):'',nv:s.used.size,pos,nrm,uv,idx:s.idx,tex:p0?texOf(p0):null,bb:bbox(s.used)});continue}
-  info.forEach((x,k)=>{const s=slice(x.is,x.is+x.ic+2);out.push({off:m,poff:x.p,pk:k,np:info.length,name:inlineName(x.p),nv:s.used.size,pos,nrm,uv,idx:s.idx,tex:texOf(x.p),bb:bbox(s.used)})})}
+  if(!ps.length||info.some(x=>!x)){const s=slice(0,ni),p0=ps[0]||0,mt=p0?texOf(p0):null;out.push({off:m,poff:p0,pk:0,np:Math.max(ps.length,1),name:p0?inlineName(p0):'',nv:s.used.size,pos,nrm,uv,idx:s.idx,tex:mt&&mt.tex||null,texOffset:mt&&mt.texOffset||0,materialOffset:mt&&mt.materialOffset||0,material:mt&&mt.material||null,bb:bbox(s.used)});continue}
+  info.forEach((x,k)=>{const s=slice(x.is,x.is+x.ic+2),mt=texOf(x.p);out.push({off:m,poff:x.p,pk:k,np:info.length,name:inlineName(x.p),nv:s.used.size,pos,nrm,uv,idx:s.idx,tex:mt.tex,texOffset:mt.texOffset,materialOffset:mt.materialOffset,material:mt.material,bb:bbox(s.used)})})}
  // Build one canonical model registry.  Pointer chains, script references and
  // descriptor-only records are evidence sources that contribute memberships;
  // none of them is allowed to silently consume/overwrite a part from another.

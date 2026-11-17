@@ -2,7 +2,8 @@
 import {
   parseVol, wadName, readWad, instances, parseLcm, parseColl, alphaProps,
   mergeBB, bbox, xboxVerts, xboxInstances, analyseStrats, bigbInfo
-} from './vol-core.js';
+} from './vol-core.js?v=step43-native-layer-uv';
+import { previewFrameIndex, previewUvOffset } from './material-preview.js?v=step43-native-layer-uv';
 
 const $=id=>document.getElementById(id),cv=$('gl'),lc=$('lbl'),lg=lc.getContext('2d');
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true}),scene=new THREE.Scene();scene.background=new THREE.Color(0x14161a);
@@ -19,7 +20,7 @@ function regTxt(e,s,k){const lk=s.l.find(a=>a[0]==k);if(lk){if(lk[1]<0)return 'n
 function fill(e,s,t){return t.replace(/@(\d+)/g,(m,k)=>regTxt(e,s,+k))}
 function wrap(t,n){const o=[];let l='';for(const w of t.split(' ')){if((l+' '+w).length>n&&l){o.push(l);l=w}else l=l?l+' '+w:w}if(l)o.push(l);return o}
 const shown=e=>show[e.n]&&(!$('rf').value||(()=>{const s=scr(e);return s&&s.c.tags.includes($('rf').value)})());
-let files=[],levels={},D=[],all=[],show={},mats=[],collMat=null,entGroup=null,hov=null,need=true,drag=null;
+let files=[],levels={},D=[],all=[],show={},mats=[],dynamicMats=[],textureBases=new Set(),collMat=null,entGroup=null,hov=null,need=true,drag=null;
 // Optional callback for model/overlay geometry owned by the editor UI. Keeping this
 // as an explicit module hook avoids relying on replacing the global buildEnts binding.
 let entityOverlayRefresh = null;
@@ -47,24 +48,64 @@ function setCam(){camera.rotation.set(pitch,yaw,0);need=true}
 function rs(){renderer.setPixelRatio(devicePixelRatio);renderer.setSize(innerWidth,innerHeight);lc.width=innerWidth;lc.height=innerHeight;camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();need=true}
 window.onresize=rs;
 
-function clearScene(){root.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){for(const m of[].concat(o.material)){if(m.map)m.map.dispose();m.dispose()}}});
- while(root.children.length)root.remove(root.children[0]);mats=[];collMat=null;entGroup=null}
+function clearScene(){const disposed=new Set();root.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){for(const m of[].concat(o.material)){const maps=m.userData&&m.userData.maps;if(maps){for(const t of maps.values())if(t&&!textureBases.has(t)&&!disposed.has(t)){disposed.add(t);t.dispose()}}else if(m.map&&!textureBases.has(m.map)&&!disposed.has(m.map)){disposed.add(m.map);m.map.dispose()}m.dispose()}}});
+ for(const t of textureBases)t.dispose();textureBases.clear();while(root.children.length)root.remove(root.children[0]);mats=[];dynamicMats=[];collMat=null;entGroup=null}
 function collColors(c){const n=c.mat.length,out=new Float32Array(n*9),p=c.pos,C=new THREE.Color(),L=new V3(.4,.8,.45).normalize();
  for(let t=0;t<n;t++){const o=t*9,ax=p[o+3]-p[o],ay=p[o+4]-p[o+1],az=p[o+5]-p[o+2],bx=p[o+6]-p[o],by=p[o+7]-p[o+1],bz=p[o+8]-p[o+2];
   let nx=ay*bz-az*by,ny=az*bx-ax*bz,nz=ax*by-ay*bx;const l=Math.hypot(nx,ny,nz)||1;
   const s=Math.abs((nx*L.x+ny*L.y+nz*L.z)/l),m=c.mat[t];C.setHSL(((m&0xff)*.137)%1,m&0x100?.35:.7,.22+.4*s);
   for(let k=0;k<3;k++){out[o+3*k]=C.r;out[o+3*k+1]=C.g;out[o+3*k+2]=C.b}}return out}
 function buildLevel(L,lv){const g=new THREE.Group(),G=lv.geo;
- if(G){const T={};
+ if(G){const T={},resourceByOffset=new Map((G.materialResources||[]).map(r=>[r.offset,r])),previewStart=performance.now();let groupOrder=0;
+  const textureOffsets=new Set(G.textureOffsets||[]);
+  const imageFor=off=>G.getTexture?G.getTexture(off):(G.texs&&G.texs[off])||null;
+  const baseTexture=off=>{const img=imageFor(off);if(!img)return null;let x=T[off];if(!x){x=new THREE.DataTexture(img.rgba,img.w,img.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;T[off]=x;textureBases.add(x)}else if(!x.image||x.image.data!==img.rgba||x.image.width!==img.w||x.image.height!==img.h){x.image={data:img.rgba,width:img.w,height:img.h};x.needsUpdate=true}return x};
+  const sourceFor=(off,seen=new Set())=>{if(!off||seen.has(off))return{type:'texture',frameOffsets:[]};const r=resourceByOffset.get(off);if(!r||!r.valid)return{type:'texture',frameOffsets:textureOffsets.has(off)?[off]:[]};
+   if(r.type==='animated')return{type:'animated',resource:r,frameOffsets:r.frameOffsets.filter(x=>textureOffsets.has(x))};
+   if(r.type==='layered')return{type:'layered',resource:r};
+   return{type:'texture',frameOffsets:textureOffsets.has(off)?[off]:[]}};
+  const addPass=(geo,source,layer,layerIndex,layerCount,groupId)=>{
+   const frameOffsets=(source&&source.frameOffsets||[]).filter(off=>textureOffsets.has(off));
+   const scroll=layer?{uMode:layer.uMode,vMode:layer.vMode,uVelocity:layer.uVelocity,vVelocity:layer.vVelocity,uFrequency:layer.uFrequency,vFrequency:layer.vFrequency,uOffset:layer.uOffset,vOffset:layer.vOffset}:null;
+   const hasUvMotion=!!(scroll&&((scroll.uMode===0&&scroll.uVelocity)||(scroll.uMode===1||scroll.uMode===2)&&scroll.uVelocity&&scroll.uFrequency||(scroll.vMode===0&&scroll.vVelocity)||(scroll.vMode===1||scroll.vMode===2)&&scroll.vVelocity&&scroll.vFrequency));
+   const independent=!!layer||!!(scroll&&(scroll.uVelocity||scroll.vVelocity)),maps=new Map();
+   // Decode only the first frame now. Later animation frames become GPU textures on demand.
+   const getMap=off=>{if(!off||!textureOffsets.has(off))return null;if(maps.has(off))return maps.get(off);const src=baseTexture(off);if(!src){maps.set(off,null);return null}const map=independent?src.clone():src;map.wrapS=map.wrapT=THREE.RepeatWrapping;if(independent){const uv=scroll?previewUvOffset(scroll,0):[0,0];map.offset.set(uv[0],uv[1])}maps.set(off,map);return map};
+   let firstOff=0,firstMap=null,img=null;for(const off of frameOffsets){const candidate=getMap(off);if(candidate){firstOff=off;firstMap=candidate;img=imageFor(off);break}}
+   const rgba=(layer&&Array.isArray(layer.color)?layer.color:[1,1,1,1]).map((v,i)=>Number.isFinite(v)?v:1);
+   const alpha=Math.max(0,Math.min(1,rgba[3]));
+   const ap=alphaProps(img);const stacked=layerCount>1,forceTransparent=stacked||alpha<0.999;
+   if(forceTransparent)ap.transparent=true;
+   if(stacked&&layerIndex>0)ap.depthWrite=false;
+   const m=new THREE.MeshBasicMaterial({map:firstMap,vertexColors:true,side:THREE.DoubleSide,color:new THREE.Color(rgba[0],rgba[1],rgba[2]),opacity:alpha,...ap,polygonOffset:true,polygonOffsetFactor:stacked?-layerIndex:1,polygonOffsetUnits:stacked?-layerIndex:1});
+   const isAnimated=!!(source&&source.type==='animated'&&frameOffsets.length>1);
+   m.userData={map:firstMap,texOff:firstOff,maps,getMap,mapOff:firstOff,frameOffsets:isAnimated?frameOffsets:null,frameIndex:0,previewStart:previewStart,scroll,tint:rgba,forceTransparent,stacked,layerIndex,getImage:imageFor};
+   mats.push(m);if(isAnimated||hasUvMotion)dynamicMats.push(m);
+   const mesh=new THREE.Mesh(geo,m);mesh.userData.kind='geo';if(stacked)mesh.renderOrder=100+groupId*8+layerIndex;g.add(mesh);
+  };
+  function flattenLayerSource(off,layer,defs,seen=new Set()){
+   const src=sourceFor(off,seen);
+   if(src.type==='layered'){
+    if(seen.has(off))return;const next=new Set(seen);next.add(off);
+    for(const child of src.resource.layers)flattenLayerSource(child.textureOffset,child,defs,next);
+   }else defs.push({source:src,layer,layerIndex:defs.length});
+  }
   for(const B of G.bufs){const P=new THREE.BufferAttribute(B.pos,3),C=new THREE.BufferAttribute(B.col4,4,true),U=new THREE.BufferAttribute(B.uv,2);
-  for(const gr of B.groups){const geo=new THREE.BufferGeometry();geo.setAttribute('position',P);geo.setAttribute('color',C);geo.setAttribute('uv',U);geo.setIndex(new THREE.BufferAttribute(gr.idx,1));
-   let map=null,alpha=false;const t=G.texs[gr.tex];
-   if(t){if(!T[gr.tex]){const x=new THREE.DataTexture(t.rgba,t.w,t.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;
-     x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;T[gr.tex]=x}map=T[gr.tex];alpha=t.alpha}
-   // the vertex buffer carries an alpha per vertex (fog sheets, water, smoke): draw such groups translucent
-   let lo=255;for(const ix of gr.idx){const a=B.al[ix];if(a<lo)lo=a}const va=lo<250,ap=alphaProps(t);if(va&&!ap.transparent){ap.transparent=true;ap.depthWrite=false;ap.alphaTest=0}
-   const m=new THREE.MeshBasicMaterial({map,vertexColors:true,side:THREE.DoubleSide,...ap,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
-   m.userData={map,texOff:gr.tex,lv:L,vtxA:va};mats.push(m);const mesh=new THREE.Mesh(geo,m);mesh.userData.kind='geo';g.add(mesh)}}}
+   for(const gr of B.groups){const geo=new THREE.BufferGeometry();geo.setAttribute('position',P);geo.setAttribute('color',C);geo.setAttribute('uv',U);geo.setIndex(new THREE.BufferAttribute(gr.idx,1));
+    // The raw kind-7 layer order is retained. Each layer gets a draw pass with its
+    // own texture, RGBA and native U/V animation modes; rotation is not applied yet.
+    let defs=[];if(gr.material&&gr.material.valid&&gr.material.type==='layered'){
+     for(const layer of gr.material.layers)flattenLayerSource(layer.textureOffset,layer,defs);
+    }else flattenLayerSource(gr.materialOffset||gr.tex,null,defs);
+    if(!defs.length&&gr.tex)defs=[{source:{type:'texture',frameOffsets:[gr.tex]},layer:null,layerIndex:0}];
+    let lo=255;for(const ix of gr.idx){const a=B.al[ix];if(a<lo)lo=a}const va=lo<250;
+    const count=defs.length;for(let i=0;i<defs.length;i++){
+     const def=defs[i];addPass(geo,def.source,def.layer,i,count,groupOrder++);
+     const m=mats[mats.length-1];m.userData.lv=L;m.userData.vtxA=va;m.userData.grTex=gr.tex;
+     if(va){m.transparent=true;m.depthWrite=false;m.alphaTest=0}
+    }
+   }}
+ }
  if(lv.coll&&lv.coll.mat.length){const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(lv.coll.pos,3));
   geo.setAttribute('color',new THREE.BufferAttribute(collColors(lv.coll),3));
   if(!collMat)collMat=new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide});
@@ -72,8 +113,20 @@ function buildLevel(L,lv){const g=new THREE.Group(),G=lv.geo;
  if(lv.pts&&lv.pts.length){const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(lv.pts,3));
   const pt=new THREE.Points(geo,new THREE.PointsMaterial({color:0x8890aa,size:2,sizeAttenuation:false}));pt.userData.kind='pts';g.add(pt)}
  root.add(g)}
+function updateMaterialPreviews(now,force=false){
+ if(!dynamicMats.length)return false;const enabled=$('ma')?$('ma').checked:true,elapsedFor=m=>enabled?Math.max(0,now-m.userData.previewStart):0;
+ for(const m of dynamicMats){const u=m.userData,elapsed=elapsedFor(m),elapsedMs=elapsed;
+  if(u.frameOffsets&&u.frameOffsets.length){const ix=enabled?previewFrameIndex(u.frameOffsets.length,elapsedMs,60):0;
+   if(force||ix!==u.frameIndex){u.frameIndex=ix;const off=u.frameOffsets[ix],map=u.getMap?u.getMap(off):(u.maps.get(off)||null),img=off&&u.getImage?u.getImage(off):null;
+    u.map=map;u.mapOff=off;m.map=$('tx').checked?map:null;const ap=alphaProps(img);m.transparent=!!(ap.transparent||u.forceTransparent||u.vtxA);m.depthWrite=(u.stacked&&u.layerIndex>0)||u.vtxA?false:ap.depthWrite;m.alphaTest=u.vtxA?0:ap.alphaTest;m.blending=ap.blending;m.needsUpdate=true;
+   }
+  }
+  if(u.scroll){const uv=previewUvOffset(u.scroll,elapsedMs);for(const map of u.maps.values())if(map)map.offset.set(uv[0],uv[1]);}
+ }
+ return enabled&&dynamicMats.length>0;
+}
 function applyView(){const gm=$('gm').checked,cm=$('cm').value,tx=$('tx').checked,vc=$('vc').checked,wf=$('wf').checked,br=+$('br').value;
- for(const m of mats){m.map=tx?m.userData.map:null;m.vertexColors=vc;m.wireframe=wf;m.color.setScalar(vc?br:1);m.needsUpdate=true}
+ for(const m of mats){m.map=tx?m.userData.map:null;m.vertexColors=vc;m.wireframe=wf;const t=m.userData.tint||[1,1,1,1],k=vc?br:1;m.color.setRGB(t[0]*k,t[1]*k,t[2]*k);m.needsUpdate=true}
  if(collMat){collMat.wireframe=cm=='wire';collMat.transparent=cm=='ghost';collMat.opacity=cm=='ghost'?.35:1;collMat.depthWrite=cm!='ghost';collMat.needsUpdate=true}
  root.traverse(o=>{const k=o.userData.kind;if(k=='geo')o.visible=gm;else if(k=='coll')o.visible=cm!='off';else if(k=='pts'||k=='entpts')o.visible=$('p').checked});
  if(entGroup)entGroup.visible=true;
@@ -252,7 +305,7 @@ $('scr').onchange=e=>{if(e.target.id==='svar'){scrVar=e.target.value;scrInst='';
 
 // ---- UI
 $('ui').onchange=e=>{const t=e.target;if(t.dataset.n){show[t.dataset.n]=t.checked;buildEnts()}
- else if(t.id=='bx'||t.id=='ex'||t.id=='or'||t.id=='pt'||t.id=='lk'||t.id=='rf')buildEnts();else if(t.id=='dl'||t.id=='ls'){inspect(sel);need=true}else if(t.id=='mz'){mz=t.checked?-1:1;applyView();fit()}else applyView();
+ else if(t.id=='bx'||t.id=='ex'||t.id=='or'||t.id=='pt'||t.id=='lk'||t.id=='rf')buildEnts();else if(t.id=='dl'||t.id=='ls'){inspect(sel);need=true}else if(t.id=='mz'){mz=t.checked?-1:1;applyView();fit()}else if(t.id=='ma'){updateMaterialPreviews(performance.now(),true);applyView()}else applyView();
  if(t.type=='checkbox'||t.tagName=='SELECT')t.blur()};
 $('ui').oninput=e=>{if(e.target.type=='range')applyView()};
 $('fit').onclick=fit;$('top').onclick=topView;
@@ -307,6 +360,7 @@ function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;
  const f=(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0),s=(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA||keys.ArrowLeft?1:0),u=(keys.KeyE?1:0)-(keys.KeyQ?1:0);
  if(f||s||u){const k=speed*((keys.ShiftLeft||keys.ShiftRight)?4:1)*dt,r=new V3(Math.cos(yaw),0,-Math.sin(yaw));
   camera.position.addScaledVector(fwd(),f*k).addScaledVector(r,s*k);camera.position.y+=u*k;need=true}
+ if(updateMaterialPreviews(t))need=true;
  if(need){need=false;camera.updateMatrixWorld();renderer.render(scene,camera);labels();tipUpdate()}
  requestAnimationFrame(tick)}
 rs();camera.position.set(0,50,100);setCam();requestAnimationFrame(tick);
@@ -315,10 +369,14 @@ rs();camera.position.set(0,50,100);setCam();requestAnimationFrame(tick);
 // controlled function overrides without publishing properties on the browser global.
 // swap one texture of an already-built level in place (no reload): used by the Textures panel
 function retexture(id,off,img){const lv=D.find(x=>x.id===id);if(lv&&lv.geo&&lv.geo.texs)lv.geo.texs[off]=img;
-  for(const m of mats){if(m.userData.lv!==id||m.userData.texOff!==off)continue;
-    const ap=alphaProps(img);if(m.userData.vtxA&&!ap.transparent){ap.transparent=true;ap.depthWrite=false;ap.alphaTest=0}
-    if(!img){m.map=null;Object.assign(m,ap)}else{const x=new THREE.DataTexture(img.rgba,img.w,img.h,THREE.RGBAFormat);x.wrapS=x.wrapT=THREE.RepeatWrapping;x.magFilter=THREE.LinearFilter;x.minFilter=THREE.LinearMipmapLinearFilter;x.generateMipmaps=true;x.needsUpdate=true;
-      if(m.map)m.map.dispose();m.map=x;m.userData.map=x;Object.assign(m,ap)}
+  for(const m of mats){const u=m.userData;if(u.lv!==id||!u.maps)continue;
+    const referenced=u.texOff===off||(u.frameOffsets&&u.frameOffsets.includes(off))||(u.grTex===off);
+    if(!referenced&&!u.maps.has(off))continue;
+    let map=u.maps.get(off)||null;
+    if(img){if(!map&&u.getMap)map=u.getMap(off);if(map){map.image={data:img.rgba,width:img.w,height:img.h};map.needsUpdate=true}}
+    else if(u.maps.has(off))u.maps.set(off,null);
+    if(u.mapOff===off){const ap=alphaProps(img);if(u.vtxA){ap.transparent=true;ap.depthWrite=false;ap.alphaTest=0}if(u.forceTransparent)ap.transparent=true;if(u.stacked&&u.layerIndex>0)ap.depthWrite=false;
+      u.map=img?map:null;m.map=$('tx').checked?u.map:null;Object.assign(m,ap);m.opacity=(u.tint&&Number.isFinite(u.tint[3]))?Math.max(0,Math.min(1,u.tint[3])):1;}
     m.needsUpdate=true}
   need=true}
 const viewerApiBindings = {

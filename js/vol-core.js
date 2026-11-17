@@ -86,6 +86,38 @@ function parseTgaBase(A,t){const ov=A.wadName&&TEXOV.get(A.wadName);if(ov&&ov.ha
 function alphaProps(img){const OP={transparent:false,depthWrite:true,alphaTest:0,blending:1},CUT={transparent:false,depthWrite:true,alphaTest:0.5,blending:1},TR={transparent:true,depthWrite:false,alphaTest:0.01,blending:1};
  if(!img)return OP;switch(img.mode){case'opaque':return OP;case'blend':return TR;case'cutout':case'keyblack':return CUT;case'additive':return{transparent:true,depthWrite:false,alphaTest:0,blending:2}}
  return!img.alpha?OP:img.soft?TR:CUT}
+// Parse the resource wrappers without flattening them to their first texture.
+// Unknown layer words are retained verbatim so later editor work can round-trip them safely.
+function parseMaterialResources(A,B){
+ const imp=fixups(B),d=new DataView(A.buffer,A.byteOffset,A.length),tex=new Set(imp[0x80000001]||[]),rd=o=>(o>=0&&o+4<=A.length)?u32(d,o):0,fl=o=>(o>=0&&o+4<=A.length)?d.getFloat32(o,true):NaN,out=[];
+ const addError=(r,e)=>{r.valid=false;r.error=e;return r};
+ for(const off of imp[0x80000006]||[]){
+  const r={offset:off,kind:6,type:'animated',headerWords:[],animationDataOffset:0,frameCount:0,frameArrayOffset:0,frameOffsets:[],valid:false};
+  if(off<0||off+0x14>A.length){out.push(addError(r,'animation wrapper header is outside the wad'));continue}
+  for(let i=0;i<5;i++)r.headerWords.push(rd(off+4*i));
+  r.animationDataOffset=rd(off+0x10);
+  if(!r.animationDataOffset||r.animationDataOffset+8>A.length){out.push(addError(r,'animation data pointer is invalid'));continue}
+  r.frameCount=rd(r.animationDataOffset);r.frameArrayOffset=rd(r.animationDataOffset+4);
+  if(!r.frameCount||r.frameCount>4096){out.push(addError(r,'frame count is outside the supported inspection range'));continue}
+  if(!r.frameArrayOffset||r.frameArrayOffset+r.frameCount*4>A.length){out.push(addError(r,'frame pointer array is outside the wad'));continue}
+  for(let i=0;i<r.frameCount;i++)r.frameOffsets.push(rd(r.frameArrayOffset+4*i));
+  r.frameTextureCount=r.frameOffsets.filter(x=>tex.has(x)).length;r.valid=true;out.push(r)
+ }
+ for(const off of imp[0x80000007]||[]){
+  const r={offset:off,kind:7,type:'layered',headerWords:[],targetWidth:0,targetHeight:0,layerCount:0,layerRecordsOffset:0,layers:[],valid:false};
+  if(off<0||off+0x14>A.length){out.push(addError(r,'layered-material header is outside the wad'));continue}
+  for(let i=0;i<5;i++)r.headerWords.push(rd(off+4*i));
+  r.targetWidth=rd(off+4);r.targetHeight=rd(off+8);r.layerCount=rd(off+0x0c);r.layerRecordsOffset=rd(off+0x10);
+  if(r.layerCount>1024){out.push(addError(r,'layer count is outside the supported inspection range'));continue}
+  if(r.layerCount&&(!r.layerRecordsOffset||r.layerRecordsOffset+r.layerCount*0x40>A.length)){out.push(addError(r,'layer record array is outside the wad'));continue}
+  for(let i=0;i<r.layerCount;i++){
+   const o=r.layerRecordsOffset+i*0x40,rawWords=Array.from({length:16},(_,k)=>rd(o+k*4));
+   r.layers.push({index:i,offset:o,textureOffset:rawWords[0],textureValid:tex.has(rawWords[0]),uVelocity:fl(o+4),vVelocity:fl(o+8),rotationRaw:rawWords[3],rotationVelocity:fl(o+0x0c),color:[fl(o+0x10),fl(o+0x14),fl(o+0x18),fl(o+0x1c)],modeRaw:rawWords[8],uMode:rawWords[8]&0xff,vMode:(rawWords[8]>>>8)&0xff,uFrequency:fl(o+0x24),vFrequency:fl(o+0x28),value24Raw:rawWords[9],value28Raw:rawWords[10],uOffset:fl(o+0x2c),vOffset:fl(o+0x30),rotationOffset:fl(o+0x34),rawWords});
+  }
+  r.valid=true;out.push(r)
+ }
+ return out.sort((a,b)=>a.offset-b.offset)
+}
 // Render geometry: import 0x23 = D3D vertex buffer {+0C nVerts, +10 P verts (24 B: xyz, BGRA, uv), +14 nIdx, +18 P u16 indices}.
 // Import 0x20 = draw part; tail at (end-44): {cx,cy,cz,0,startVertex,startIndex}, preceded by {1,5(strip),nVerts,primCount,P}.
 // A part draws primCount+2 indices as a D3D triangle strip. +0x10 = texture (import 1, or anim 6 / layered 7 wrapping one).
@@ -101,8 +133,10 @@ function parseLcm(A,B){const imp=fixups(B),vbl=imp[0x80000023];if(!vbl||!vbl.len
   for(let i=0;i<ni;i++)I[i]=d.getUint16(io+2*i,true);
   VB.set(vb,{nv,ni,pos,col,col4,al,uv,I,groups:new Map(),tris:0})}
  if(!VB.size)return null;
- const tex=new Set(imp[0x80000001]||[]),s6=new Set(imp[0x80000006]||[]),s7=new Set(imp[0x80000007]||[]);
- const res=(t,k=0)=>{if(tex.has(t))return t;if(k>4)return 0;if(s7.has(t))return res(rd(rd(t+16)),k+1);if(s6.has(t))return res(rd(rd(rd(t+16)+4)),k+1);return 0};
+ const tex=new Set(imp[0x80000001]||[]),materialResources=parseMaterialResources(A,B),materialByOffset=new Map(materialResources.map(x=>[x.offset,x]));
+ const res=(t,k=0)=>{if(tex.has(t))return t;if(k>4)return 0;const r=materialByOffset.get(t);if(!r||!r.valid)return 0;
+  if(r.type==='layered')return r.layers.length?res(r.layers[0].textureOffset,k+1):0;
+  if(r.type==='animated')return r.frameOffsets.length?res(r.frameOffsets[0],k+1):0;return 0};
  const tailAt=(o,V)=>{if(o<0||o+24>A.length)return null;const a=rd(o+16),b=rd(o+20),nI=rd(o-8);
   if(rd(o-20)!==1||rd(o-16)!==5||rd(o+12)!==0||!nI||a>=V.nv||b+nI+2>V.ni||V.I[b]!==a)return null;
   if(![fl(o),fl(o+4),fl(o+8)].every(x=>isFinite(x)&&Math.abs(x)<1e5))return null;return{a,b,nI}};
@@ -110,15 +144,18 @@ function parseLcm(A,B){const imp=fixups(B),vbl=imp[0x80000023];if(!vbl||!vbl.len
  ps.forEach((p,k)=>{const end=k+1<ps.length?ps[k+1]:p+0x400,V=VB.get(rd(p+12));if(!V){missed++;return}
   let t=tailAt(end-44,V);for(let o=p+0x40;!t&&o<Math.min(end-20,p+0x200);o+=4)t=tailAt(o,V);
   if(!t){missed++;return}
-  V.cov=(V.cov||0)+t.nI+2;const tk=res(rd(p+16));let g=V.groups.get(tk);if(!g)V.groups.set(tk,g=[]);const I=V.I;
+  V.cov=(V.cov||0)+t.nI+2;const materialOffset=rd(p+16),tk=res(materialOffset),key=materialOffset||0;let g=V.groups.get(key);if(!g){g={tex:tk,materialOffset,material:materialByOffset.get(materialOffset)||null,idx:[]};V.groups.set(key,g)}const I=V.I,ix=g.idx;
   for(let j=0;j<t.nI;j++){const i0=I[t.b+j],i1=I[t.b+j+1],i2=I[t.b+j+2];if(i0==i1||i1==i2||i0==i2)continue;
-   if(j&1)g.push(i1,i0,i2);else g.push(i0,i1,i2);tris++}});
+   if(j&1)ix.push(i1,i0,i2);else ix.push(i0,i1,i2);tris++}});
  const bufs=[],texs={};
  for(const V of VB.values()){const gl=[];
-  for(const[tk,g]of V.groups){gl.push({tex:tk,idx:V.nv<65536?Uint16Array.from(g):Uint32Array.from(g)});if(tk&&!(tk in texs))texs[tk]=parseTga(A,tk)}
+  for(const g of V.groups.values()){const tk=g.tex;gl.push({tex:tk,materialOffset:g.materialOffset,material:g.material,idx:V.nv<65536?Uint16Array.from(g.idx):Uint32Array.from(g.idx)});if(tk)getTexture(tk)}
   bufs.push({nv:V.nv,pos:V.pos,col:V.col,col4:V.col4,al:V.al,uv:V.uv,groups:gl})}
  let cov=0,tot=0;for(const V of VB.values()){cov+=V.cov||0;tot+=V.ni}
- return{bufs,texs,tris,parts:ps.length,missed,cov,tot}}
+ // Decode texture objects lazily so animation frames and secondary material layers can be
+ // requested by the renderer without eagerly decoding every frame in a level.
+ function getTexture(off){if(!off||!tex.has(off))return null;if(!Object.prototype.hasOwnProperty.call(texs,off))texs[off]=parseTga(A,off);return texs[off]||null}
+ return{bufs,texs,getTexture,textureOffsets:[...tex],materialResources,tris,parts:ps.length,missed,cov,tot}}
 // Collision mesh at A+0: {+20 P verts, +24 nVerts}; 16-byte verts xyz + flags (0x80 valid, 0x40 closes triangle (i-2,i-1,i), 0x100 swaps order, >>16 = material)
 function parseColl(A){if(A.length<0x30)return null;const d=new DataView(A.buffer,A.byteOffset,A.length),vo=u32(d,0x20),n=u32(d,0x24);
  if(!n||vo<0x30||vo+n*16>A.length)return null;const pos=[],mat=[];let f1=0,f2=0;
@@ -391,7 +428,7 @@ function bigbInfo(u8){const d=new DataView(u8.buffer,u8.byteOffset,u8.length);if
 // until the remaining classic scripts are converted in later steps.
 export {
   u32, parseVol, inflate, wadName, readWad, cstr, r2,
-  shapeAt, instances, fixups, parseTga, alphaProps, setTexMode, clearTexModes, setTexOverride, clearTexOverrides, parseLcm, parseColl,
+  shapeAt, instances, fixups, parseTga, alphaProps, parseMaterialResources, setTexMode, clearTexModes, setTexOverride, clearTexOverrides, parseLcm, parseColl,
   mergeBB, bbox, xboxVerts, xboxInstances,
   SI_OPS, SI_CAT, SI_PROP, siProp, SI_ARGN, swa,
   SI_SKIP, SI_L0, SI_L1, SI_L2, siLevel, siParseArgs,

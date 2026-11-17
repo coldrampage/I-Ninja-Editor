@@ -1,6 +1,6 @@
 // Project lifecycle: project JSON loading/saving and patched VOL/AVL generation.
 // All mutable editor state and format-specific helpers are supplied by the coordinator.
-import { applyTextureOps } from './texture-tools.js';
+import { applyTextureOps } from './texture-tools.js?v=step43-native-layer-uv';
 import { planTints, applyTintData } from './class-tint.js';
 export function installProjectManager({
   Viewer, EC, IA,
