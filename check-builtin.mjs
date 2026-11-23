@@ -1,0 +1,4 @@
+import {EC} from './js/editor-core.js';
+// no direct private builtin; reconstruct via base class after build test
+import fs from 'node:fs'; import {parseVol,readWad,siWad} from './js/vol-core.js'; import {bytesToBase64} from './js/custom-models.js';
+const raw=fs.readFileSync('/mnt/data/ininja_work/base10.vol'),ab=raw.buffer.slice(raw.byteOffset,raw.byteOffset+raw.byteLength),e=parseVol(ab).find(x=>x.name==='10-00.LCS'),[A,B]=readWad(ab,e),bundle=bytesToBase64(new Uint8Array(fs.readFileSync('./test-assets/Suzanne-Untitled.inimodel')));const r=EC.patchCustomModels(A,B,e.name,{assets:[{id:'x',bundle,collisionType:'mesh'}],instances:[{id:'i',assetId:'x',position:[0,5,0],rotation:[0,0,0],scale:[1,1,1]}]},()=>null,[]);const w=siWad(r.A,r.B);console.log(w.classes.map(c=>({name:c.name,block:w.U(c.off+0x0c),off:c.off})).filter(c=>c.name==='INIGenericCollision'));

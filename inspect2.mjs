@@ -1,0 +1,6 @@
+import fs from 'node:fs';import {parseVol,readWad,instances,siWad} from './js/vol-core.js';import {EC} from './js/editor-core.js';
+const b=fs.readFileSync('/mnt/data/work/current-spawn-fixes/10.vol'),vol=b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength),files=parseVol(vol);
+for(const name of ['10-30.LCS','10-31.LCS','10-32.LCS','10-05.LCS']){const f=files.find(x=>x.name===name);const[A,B]=readWad(vol,f),rows=instances(A,B),AL=EC.parseModels(A,B),sw=siWad(A,B);console.log('\n###',name,'AL keys',Object.keys(AL).filter(k=>/entry|class|script/i.test(k)));
+for(const q of rows.filter(q=>q&&(/Robot_SneakDoor|GrindRailHelper|DragonWolf|SneakSentinel/i.test(q.n))))console.log(JSON.stringify({i:q.i,n:q.n,p:q.p,q:q.q,params:q.params?.map(x=>x?.v),size:q.size,keys:Object.keys(q)}));
+for(const cn of ['Robot_SneakDoor','Robot_SneakDoor_Part','GrindRailHelper','DragonWolf','DragonWolf_Head','DWBodyBit','SneakSentinel','SneakTeleport','TeleportFXController']){const c=sw.classes.find(c=>c.name===cn);if(c){console.log('CLASSDEF',cn,{entry:c.entry,ninit:c.ninit,off:c.off, size:c.size});const r=EC.classReports(A,B).find(x=>x.name===cn);if(r)console.log('REPORT',JSON.stringify(r,null,2).slice(0,13000));}}
+}

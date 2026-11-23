@@ -19,7 +19,8 @@
 #sdet{flex:1;overflow:auto;padding:10px 14px}#sdet h2{margin:0 0 4px}#sdet a,#scr a{color:#7cf;cursor:pointer;text-decoration:underline}
 #sdet .tag{display:inline-block;background:#234;border:1px solid #468;border-radius:8px;padding:0 6px;margin:1px 2px 1px 0;font-size:11px;color:#9cf}#sdet .dim,#scr .dim{color:#789}#smsg{margin-top:4px;color:#fc6}#insp a,#smsg a{cursor:pointer}
 #sdet table{border-collapse:collapse}#sdet td{border-top:1px solid #222;padding:1px 8px 1px 0;vertical-align:top}#sdet td:first-child{color:#8a8}
-#sdet pre{margin:2px 0 8px;white-space:pre-wrap;font:12px/1.4 monospace;color:#cde;background:#0a0c10;padding:6px;overflow:auto}#sdet summary{cursor:pointer;color:#fc6;margin-top:4px}</style>
+#sdet pre{margin:2px 0 8px;white-space:pre-wrap;font:12px/1.4 monospace;color:#cde;background:#0a0c10;padding:6px;overflow:auto}#sdet summary{cursor:pointer;color:#fc6;margin-top:4px}
+#ed_sel .reglink{margin:3px 0;color:#7cf}#ed_sel .regdata{margin:2px 0 6px 18px;border-left:2px solid #345;padding-left:6px}#ed_sel .regdata summary{cursor:pointer;color:#8cf}#ed_sel .regdata-lang{margin:5px 0 8px;padding:4px;background:#111820;border:1px solid #28313d}#ed_sel .regdata-row{display:flex;align-items:flex-start;gap:5px;margin:3px 0;flex-wrap:wrap}#ed_sel .regdata-row label{min-width:92px;color:#9ab;white-space:normal}#ed_sel .regdata textarea{box-sizing:border-box;flex:1;min-width:180px;max-width:100%;background:#101419;color:#ddd;border:1px solid #444;font:12px sans-serif}#ed_sel .regdata select,#ed_sel input[data-text-slot]{max-width:100%;background:#101419;color:#ddd;border:1px solid #444}#ed_sel .regdata button{font-size:10px;padding:1px 4px}#ed_sel .regdata button[data-sound-preview]{font-size:12px;min-width:25px;padding:2px 5px}#ed_sel .regdata button[data-sound-preview]:disabled{opacity:.4;cursor:not-allowed}</style>
 <canvas id=gl></canvas><canvas id=lbl></canvas>
 <div id=ui><b>I-Ninja 3D level viewer</b><br>
 <input type=file id=file accept=".vol,.VOL,.avl,.AVL,.lcm,.LCM,.lcs,.LCS,.xbm,.XBM,.xbs,.XBS,.json" multiple> <button id=dirbtn title="pick the game folder: every .vol in it is loaded and the .avl with the same name (10.vol + 10.avl) is found automatically">open folder...</button><input type=file id=dirpick webkitdirectory multiple hidden>
@@ -56,4 +57,4 @@
 <div id=insp></div><div id=tip></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="js/three-fallback.js"></script>
-<script type="module" src="js/bootstrap.js?v=step10-prefab-module"></script>
+<script type="module" src="js/bootstrap.js?v=step110-rotation-boundary-fix"></script>
