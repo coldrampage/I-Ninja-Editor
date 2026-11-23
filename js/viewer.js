@@ -2,8 +2,8 @@
 import {
   parseVol, wadName, readWad, instances, parseLcm, parseColl, alphaProps,
   mergeBB, bbox, xboxVerts, xboxInstances, analyseStrats, bigbInfo
-} from './vol-core.js?v=step43-native-layer-uv';
-import { previewFrameIndex, previewUvOffset } from './material-preview.js?v=step43-native-layer-uv';
+} from './vol-core.js?v=step110-rotation-boundary-fix';
+import { previewFrameIndex, previewUvOffset } from './material-preview.js?v=step110-rotation-boundary-fix';
 
 const $=id=>document.getElementById(id),cv=$('gl'),lc=$('lbl'),lg=lc.getContext('2d');
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true}),scene=new THREE.Scene();scene.background=new THREE.Color(0x14161a);
@@ -24,6 +24,7 @@ let files=[],levels={},D=[],all=[],show={},mats=[],dynamicMats=[],textureBases=n
 // Optional callback for model/overlay geometry owned by the editor UI. Keeping this
 // as an explicit module hook avoids relying on replacing the global buildEnts binding.
 let entityOverlayRefresh = null;
+let extraEntityProvider = null;
 let triggerOverlayRender = null;
 let pathOverlayRender = null;
 function notifyEntityOverlayRefresh(){
@@ -32,6 +33,9 @@ function notifyEntityOverlayRefresh(){
 }
 export function setEntityOverlayRefresh(callback){
  entityOverlayRefresh=typeof callback==='function'?callback:null;
+}
+export function setExtraEntityProvider(callback){
+ extraEntityProvider=typeof callback==='function'?callback:null;
 }
 export function setTriggerOverlayRender(callback){
  triggerOverlayRender=typeof callback==='function'?callback:null;
@@ -168,8 +172,8 @@ function fit(){const b=boundsAll();if(!b)return;const c=[(b[0]+b[3])/2,(b[1]+b[4
  $('sp').value=Math.log10(sz/6);camera.far=Math.max(5000,sz*4);$('fr').value=Math.round(camera.far);applyView();setCam()}
 function topView(){const b=boundsAll();if(!b)return;const c=gworld([(b[0]+b[3])/2,(b[1]+b[4])/2,(b[2]+b[5])/2]),sz=Math.max(b[3]-b[0],b[5]-b[2],10);
  camera.position.set(c.x,b[4]+sz*.9,c.z);pitch=-Math.PI/2+.001;yaw=0;setCam()}
-function refresh(){all=D.flatMap(l=>l.ents.map(e=>({...e,L:l.id})));const names={};all.forEach(e=>names[e.n]=(names[e.n]||0)+1);
- const old=show;show={};for(const n in names)show[n]=n in old?old[n]:(all.some(e=>e.n==n&&e.b)||/Start|Check|Stream|Door|NextArea/.test(n));
+function refresh(){const base=D.flatMap(l=>l.ents.map(e=>({...e,L:l.id})));let extra=[];if(extraEntityProvider){try{extra=extraEntityProvider()||[]}catch(e){console.error('extra entity provider failed',e)}}all=base.concat(extra);const names={};all.forEach(e=>names[e.n]=(names[e.n]||0)+1);
+ const old=show;show={};for(const n in names)show[n]=n in old?old[n]:(all.some(e=>e.n==n&&e.customModel)||all.some(e=>e.n==n&&e.b)||/Start|Check|Stream|Door|NextArea/.test(n));
  $('ctl').style.display='';const tip=n=>{const e=all.find(q=>q.n==n&&scr(q));if(!e)return'';const c=scr(e).c;return ' title="'+esc(c.tags.join(', ')+'\n'+fill(e,scr(e),c.brief)).replace(/"/g,'&quot;')+'"'};
  $('names').innerHTML=Object.keys(names).sort().map(n=>'<label style="color:'+col(n)+'"'+tip(n)+'><input type=checkbox data-n="'+n+'"'+(show[n]?' checked':'')+'> '+n+' ('+names[n]+')</label>').join('');
  const tags=new Set();for(const e of all){const s=scr(e);if(s)s.c.tags.forEach(t=>tags.add(t))}const cur=$('rf').value;
@@ -381,6 +385,7 @@ function retexture(id,off,img){const lv=D.find(x=>x.id===id);if(lv&&lv.geo&&lv.g
   need=true}
 const viewerApiBindings = {
   get retexture() { return retexture; },
+  get setExtraEntityProvider() { return setExtraEntityProvider; },
   get $() { return $; },
   get D() { return D; }, set D(value) { D = value; },
   get SCR() { return SCR; }, set SCR(value) { SCR = value; },

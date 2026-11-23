@@ -9,9 +9,9 @@
 //        L_tint_<entry>:
 //      The prologue goes into the same code block text the Scripts tab edits, so it is relinked with any code edits the project has.
 // The project stores only  tints: { <wad>: { inst: { "<instance index>": [r,g,b] } } }.
-import { EC } from './editor-core.js?v=step43-native-layer-uv';
+import { EC } from './editor-core.js?v=step110-rotation-boundary-fix';
 import { IA } from './strat-assembler.js';
-import { siWad, fixups } from './vol-core.js?v=step43-native-layer-uv';
+import { siWad, fixups } from './vol-core.js?v=step110-rotation-boundary-fix';
 
 const MAGIC = 4411212; // 0x434F4C: a flag value garbage registers will not normally hold
 const EXTRA = 4;
@@ -168,7 +168,7 @@ function installTintUi({ Viewer, getProject, getWad, wadOf, rec, onChange = () =
   function inject() {
     const S = Viewer.$('ed_sel'); if (!S || !Viewer.sel) return;
     const old = Viewer.$('ed_tint_box'); if (old) old.remove();
-    const R = rec(Viewer.sel); if (!R) return;
+    const R = rec(Viewer.sel); if (!R || R.custom || Viewer.sel.customModel) return;
     const L = Viewer.sel.L, w = wadOf(L); if (!w) return;
     const e = R.e, box = document.createElement('div'); box.id = 'ed_tint_box'; box.style.cssText = 'margin-top:5px;border-top:1px solid #333;padding-top:4px';
     const g = getWad(w); let warn = '';

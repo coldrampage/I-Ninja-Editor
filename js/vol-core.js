@@ -294,7 +294,7 @@ class SiAn{
   for(const o of offs){const i=this.ins.get(o);for(const t of i.targets)if(offset.has(t))targets.add(t);
    if((['jmp','jnz','jz'].includes(i.mn)||i.form.startsWith('br_'))&&i.targets.length&&i.targets[0]<=o&&offset.has(i.targets[0]))back.add(i.targets[0])}
   const seed={};for(let k=0;k<ninit;k++)if(!W.has(k))seed[k]=['y',k];let st=Object.assign({},seed);
-  const L=[],stack=[];let nb=0;const facts={nat:{},spawn:[],tested:new Set(),sw:new Set()},uses={};
+  const L=[],stack=[];let nb=0;const facts={nat:{},spawn:[],spawnDetails:[],tested:new Set(),sw:new Set()},uses={};let spawnOffset=[0,0,0],savedSpawnOffset=null;
   const emit=(l,t,b=null,k=null,alt=null,pair=null)=>L.push({l,t,b,k,alt,pair});
   const closeTo=off=>{while(stack.length&&stack[stack.length-1].kind==='if'&&stack[stack.length-1].end<=off){const b=stack.pop();emit(2,'}',b.id,'c')}};
   const ysyms=v=>{const r=[];if(v){if(v[0]==='y')r.push(v[1]);else if(v[0]==='x')for(const m of v[1].matchAll(/@(\d+)/g))r.push(+m[1])}return r};
@@ -339,11 +339,14 @@ class SiAn{
     else if((mn[0]==='s'&&SI_CMP[mn.slice(1)])||(mn.slice(0,2)==='fs'&&SI_CMP[mn.slice(2)]))st[i.a]=['x','('+vs(b)+' '+SI_CMP[mn.slice(-2)]+' '+vs(c)+')'];
     else st[i.a]=siFold(mn,b,c)}
    else if(mn==='native'||mn==='native_y'){const[nm,ins,outs,nin,nout]=this.native(i),base=f==='nat_a'?i.a:i.b;let lvl=siLevel(nm);
-    const args=[];for(let j=0;j<nin;j++)args.push(R(base+j));if(['Strat_SetModel','Strat_SetModelEx','Strat_SetModelCollide','Strat_SetShadowModel','Strat_SetAttachModel'].includes(nm)){for(let ai=0;ai<args.length;ai++){const v=args[ai];if(v&&v[0]==='p')this.modelRefs.push({cls:this.modelClass,native:nm,call:i.off,arg:ai,table:v[1]})}}const types=[];for(const t of ins){if(t==='v3')types.push('f','f','f');else types.push(t)}
+    const args=[];for(let j=0;j<nin;j++)args.push(R(base+j));if(['Strat_SetModel','Strat_SetModelEx','Strat_SetModelCollide','Strat_SetShadowModel','Strat_SetAttachModel'].includes(nm)){for(let ai=0;ai<args.length;ai++){const v=args[ai];if(v&&(v[0]==='p'||v[0]==='y'))this.modelRefs.push({cls:this.modelClass,native:nm,call:i.off,arg:ai,argRegister:base+ai,table:v[0]==='p'?v[1]:null,register:v[0]==='y'?v[1]:null,conditions:stack.filter(x=>x.kind==='if'&&x.condition).map(x=>x.condition)})}}const types=[];for(const t of ins){if(t==='v3')types.push('f','f','f');else types.push(t)}
     let txt;const single=ins.length===1&&ins[0]==='?';
     if(nm.startsWith('Strat_Spawn')){const cls=args.length?args[0]:null,init=[];for(let k=0;k<8;k++)init.push(R(base+2+k));while(init.length&&init[init.length-1]===null)init.pop();
-     txt=nm+' -> '+vs(cls)+(init.length?'  init('+init.map(v=>vs(v)).join(', ')+')':'');facts.spawn.push(cls&&cls[0]==='c'?cls[1]:'?');init.forEach((v,k)=>useSyms(v,nm,2+k,null))}
+     const childName=cls&&cls[0]==='c'?cls[1]:'?';txt=nm+' -> '+vs(cls)+(init.length?'  init('+init.map(v=>vs(v)).join(', ')+')':'');facts.spawn.push(childName);facts.spawnDetails.push({name:childName,offset:spawnOffset.slice(),call:i.off,init:init.map(v=>v?{kind:v[0],value:v[1]}:null),conditions:stack.filter(x=>x.kind==='if'&&x.condition).map(x=>x.condition)});init.forEach((v,k)=>useSyms(v,nm,2+k,null))}
     else{const shown=[],names=SI_ARGN[nm]||[];args.forEach((v,j)=>{const ty=j<types.length?types[j]:null;useSyms(v,nm,j,ty);if(v===null&&single)return;const s=vs(v,ty);shown.push(j<names.length&&args.length>1?names[j]+'='+s:s)});txt=nm+'('+shown.join(', ')+')'}
+    if(nm==='Strat_SaveTransform')savedSpawnOffset=spawnOffset.slice();
+    else if(nm==='Strat_RestoreTransform'&&savedSpawnOffset)spawnOffset=savedSpawnOffset.slice();
+    else {const mm=nm.match(/^Strat_MoveLocal([XYZ])(Neg)?$/);if(mm&&args.length){const axis='XYZ'.indexOf(mm[1]),v=args[0],ty=types[0],n=v&&(v[0]==='f'?Number(v[1]):v[0]==='i'&&ty==='f'?siFB(v[1]):v[0]==='i'?Number(v[1]):NaN);if(Number.isFinite(n))spawnOffset[axis]+=(mm[2]?-1:1)*n}}
     facts.nat[nm]=(facts.nat[nm]||0)+1;
     if(lvl!==null){if(outs.length&&nm!=='Camera_Create'&&!nm.startsWith('Strat_Find'))lvl=2;emit(lvl,txt+(mn==='native_y'?'   \u27c2 may yield':''))}
     const n=Math.max(nin,nout,outs.length?1:0);for(let j=0;j<n;j++)st[base+j]=null;
@@ -361,10 +364,10 @@ class SiAn{
     if(t<=o){const lp=stack.filter(s=>s.kind==='loop'&&s.head===t);
      if(lp.length&&stack[stack.length-1]===lp[lp.length-1]){const b=stack.pop();emit(2,'}  // repeat',b.id,'c')}else emit(2,'goto L'+(t-this.base).toString(16)+' (back)')}
     else{const nxt=o+4*i.size,top=stack.length?stack[stack.length-1]:null;
-     if(top&&top.kind==='if'&&top.end===nxt&&t>nxt&&!top.else){stack.pop();emit(2,'}',top.id,'c');nb++;stack.push({kind:'if',id:nb,end:t,else:true});emit(1,'else {',nb,'h','if ('+top.cond+') {',top.id);continue}
+     if(top&&top.kind==='if'&&top.end===nxt&&t>nxt&&!top.else){stack.pop();emit(2,'}',top.id,'c');nb++;stack.push({kind:'if',id:nb,end:t,cond:top.cond,condition:top.cond,else:true});emit(1,'else {',nb,'h','if ('+top.cond+') {',top.id);continue}
      emit(2,'goto L'+(t-this.base).toString(16))}}
    else if(i.targets.length&&(mn==='jz'||mn==='jnz'||f.startsWith('br_'))){const t=i.targets[0];
-    if(t>o){const c=condText(i,true);nb++;stack.push({kind:'if',id:nb,end:t,cond:condText(i,false)});emit(1,'if ('+c+') {',nb,'h')}
+    if(t>o){const c=condText(i,true),taken=condText(i,false);nb++;stack.push({kind:'if',id:nb,end:t,cond:taken,condition:c});emit(1,'if ('+c+') {',nb,'h')}
     else{const c=condText(i,false),lp=stack.filter(s=>s.kind==='loop'&&s.head===t);
      if(lp.length&&stack[stack.length-1]===lp[lp.length-1]){const b=stack.pop();emit(2,'}  // repeat while ('+c+')',b.id,'c')}else emit(2,'if ('+c+') goto L'+(t-this.base).toString(16)+' (back)')}}
    else if(mn==='switch'||mn==='switch_sparse'){const sv=R(i.a);condSyms(sv);if(sv&&sv[0]==='y')facts.sw.add(sv[1]);
@@ -377,7 +380,7 @@ function siEventDesc(key,pool){const t=key&0xffff,p=key>>>16;
  if(t===8)return'message #'+p;if(t===4)return'collision (touched by another strat)';if(t===2)return'every '+p+' frame'+(p===1?'':'s');if(t===0x20)return'once, after '+p+' frames';if(t===0x10)return'random timer';
  if(t===0x40)return'animation notify "'+(pool||'?')+'"';if(t===0x80)return'one-shot (DAT_001ebc44 gate)';if(t===0x200)return'ground/wall contact';return'event type 0x'+t.toString(16)+' param '+p}
 function siEventName(w,c,key){const p=c.pool+(key>>>16);if(p<c.events_start){const nm=siCstr(w.A,p);if(nm&&[...nm].every(ch=>ch.charCodeAt(0)>32&&ch.charCodeAt(0)<127))return nm}return(key>>>0).toString(16).padStart(8,'0')}
-function siClass(az,c,owned){az.modelClass=c.name;const w=az.w,roots=[['entry',c.entry,'entry']];
+function siClass(az,c,owned){const modelRefStart=az.modelRefs.length;az.modelClass=c.name;const w=az.w,roots=[['entry',c.entry,'entry']];
  for(const[idx,key,p]of owned)roots.push(['ev'+idx,p,siEventDesc(key,(key&0xffff)===0x40?siEventName(w,c,key):null)]);
  const code=[],sub=new Map();
  for(const[n,p,d]of roots){if(!az.ins.has(p))continue;const[offs,calls]=az.reach([p]);code.push({n,p,d,offs});for(const cc of calls)if(!sub.has(cc))sub.set(cc,null)}
@@ -385,12 +388,19 @@ function siClass(az,c,owned){az.modelClass=c.name;const w=az.w,roots=[['entry',c
  while(pend.length){const s=pend.pop();if(sub.get(s)!==null)continue;const[offs,calls]=az.reach([s]);sub.set(s,offs);for(const cc of calls)if(!sub.has(cc)){sub.set(cc,null);pend.push(cc)}}
  const every=new Set();for(const h of code)h.offs.forEach(o=>every.add(o));for(const v of sub.values())if(v)v.forEach(o=>every.add(o));
  az.base=c.entry;az.subname=new Map([...sub.keys()].sort((a,b)=>a-b).map((s,n)=>[s,'sub_'+n]));
- const W=az.written([...every].sort((a,b)=>a-b)),ninit=c.ninit,fa={nat:{},spawn:[],tested:new Set(),sw:new Set()},ua={};
+ // Keep entry-script register analysis independent from event handlers. A
+ // register can be an initial pointer in the entry routine (for example r0
+ // passed to Strat_SetModelCollide) even when a later message/collision event
+ // reuses that same register as a scratch value. Mixing all roots here marks
+ // the initial register as written before the entry routine can consume it.
+ const entryOffsets=new Set(),entrySeen=new Set(),entryTodo=[c.entry];
+ while(entryTodo.length){const p=entryTodo.pop();if(entrySeen.has(p))continue;entrySeen.add(p);const[offs,calls]=az.reach([p]);for(const o of offs)entryOffsets.add(o);for(const call of calls)if(!entrySeen.has(call))entryTodo.push(call)}
+ const W=az.written([...every].sort((a,b)=>a-b)),entryW=az.written([...entryOffsets].sort((a,b)=>a-b)),ninit=c.ninit,fa={nat:{},spawn:[],tested:new Set(),sw:new Set()},ua={};
  const absorb=(f,u)=>{for(const k in f.nat)fa.nat[k]=(fa.nat[k]||0)+f.nat[k];fa.spawn.push(...f.spawn);f.tested.forEach(x=>fa.tested.add(x));f.sw.forEach(x=>fa.sw.add(x));for(const k in u)(ua[k]=ua[k]||[]).push(...u[k])};
- const handlers=[],briefs=[];
- for(const h of code){const[L,f,u]=az.run(h.offs,ninit,W);absorb(f,u);handlers.push({id:h.n,on:h.d,t:[0,1,2].map(l=>siRender(L,l))});
+ const handlers=[],briefs=[];let entryInitialSpawns=[],entrySpawnDetails=[];
+ for(const h of code){const[L,f,u]=az.run(h.offs,ninit,h.n==='entry'?entryW:W);absorb(f,u);if(h.n==='entry'){entryInitialSpawns=[...new Set(f.spawn.filter(x=>x&&x!=='?'))].slice(0,8);entrySpawnDetails=f.spawnDetails.slice(0,16)}handlers.push({id:h.n,on:h.d,t:[0,1,2].map(l=>siRender(L,l))});
   for(const x of L)if(x.l===0&&x.k===null&&!x.t.startsWith('Strat_Enable')&&!x.t.startsWith('Strat_Die'))briefs.push(x.t)}
- const subs=[];for(const[s,offs]of [...sub.entries()].sort((a,b)=>a[0]-b[0])){if(!offs||!offs.length)continue;const[L,f,u]=az.run(offs,ninit,W);absorb(f,u);subs.push({id:az.subname.get(s),on:'called subroutine',t:[0,1,2].map(l=>siRender(L,l))})}
+ const subs=[];for(const[s,offs]of [...sub.entries()].sort((a,b)=>a[0]-b[0])){if(!offs||!offs.length)continue;const[L,f,u]=az.run(offs,ninit,entryOffsets.has(s)?entryW:W);absorb(f,u);subs.push({id:az.subname.get(s),on:'called subroutine',t:[0,1,2].map(l=>siRender(L,l))})}
  const nat=fa.nat,tags=SI_TAGS.filter(([t,pre])=>Object.keys(nat).some(n=>swa(n,pre))).map(x=>x[0]);
  if(roots.some(e=>e[2].startsWith('collision')))tags.push('Touch trigger');if(roots.some(e=>e[2].includes('message')))tags.push('Message handler');
  if(roots.some(e=>/^(every|once|random)/.test(e[2])))tags.push('Timer');if('Strat_Die' in nat)tags.push('Can remove itself');
@@ -402,7 +412,11 @@ function siClass(az,c,owned){az.modelClass=c.name;const w=az.w,roots=[['entry',c
   if(W.has(rk)&&!us.length)note='reassigned by the script';else if(us.length)note=us.slice(0,3).join(', ')+(us.length>3?' \u2026':'');
   else if(fa.sw.has(rk))note='selects behaviour (switch)';else if(fa.tested.has(rk))note='tested in conditions';else note='unused / consumed indirectly';
   const fl=u.filter(x=>x[2]).map(x=>x[2]);roles[rk]={note,ty:fl.length?fl[0]:null}}
- return{name:c.name,tags,brief,handlers,subs,roles,spawns:[...new Set(fa.spawn.filter(x=>x!=='?'))].sort()}}
+ // Mark model setters reachable from the class entry separately from setters
+ // that only occur in message/animation/timer handlers. These entry refs are
+ // the best evidence for the object's initial map appearance.
+ for(const ref of az.modelRefs.slice(modelRefStart)){ref.scope=entryOffsets.has(ref.call)?'entry':'handler';ref.classEntry=c.entry;ref.conditions=Array.isArray(ref.conditions)?ref.conditions:[]}
+ return{name:c.name,tags,brief,handlers,subs,roles,spawns:[...new Set(fa.spawn.filter(x=>x!=='?'))].sort(),entryInitialSpawns,entrySpawnDetails}}
 function siInstRegs(az,inst,ci){const w=az.w,A=w.A,c=w.classes[inst.cls],out=[];
  for(let k=0;k<Math.min(c.ninit,16);k++){const loc=inst.init+4*k,v=w.U(loc),isp=w.rel.has(loc);
   const s=isp&&v>0&&v<A.length?siPrint(siCstr(A,v)):null,ty=(ci.roles[k]||{}).ty;let txt;

@@ -1,6 +1,6 @@
 // Assembly editor for the Scripts tab. Keeps code edits in the project and applies
 // them during patched VOL construction through the controller's fingerprint callback.
-import { siWad } from './vol-core.js?v=step43-native-layer-uv';
+import { siWad } from './vol-core.js?v=step110-rotation-boundary-fix';
 
 export function installScriptEditor({Viewer, IA, EC, getWad, wadOf, isVol, volOf, getVolName, getProject}) {
 // ---- assembly editor (Scripts tab). Edits the code block that holds the selected class; saved in the project (scripts) and applied by "Build patched .vol"

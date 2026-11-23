@@ -8,8 +8,8 @@
 //
 // A project stores the user's own TGA bytes (base64) per wad, never any original game data:
 //   textures: [{op:'replace', tex:<object offset>, tga:<base64>}, {op:'add', id:'name', tga:<base64>, assign:[<draw-part offsets>]}]
-import { EC } from './editor-core.js?v=step43-native-layer-uv';
-import { fixups, parseTga, parseMaterialResources } from './vol-core.js?v=step43-native-layer-uv';
+import { EC } from './editor-core.js?v=step110-rotation-boundary-fix';
+import { fixups, parseTga, parseMaterialResources } from './vol-core.js?v=step110-rotation-boundary-fix';
 
 const isPow2 = n => n > 0 && (n & (n - 1)) === 0;
 const MIN_DIM = 4, MAX_DIM = 512;

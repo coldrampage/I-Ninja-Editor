@@ -1,13 +1,14 @@
 import { installTriggerEditor } from './trigger-editor.js?v=step16-cylinder-resize';
-import { installPathEditor } from './path-editor.js?v=step43-native-layer-uv';
+import { installPathEditor } from './path-editor.js?v=step110-rotation-boundary-fix';
 import { decodeXboxAdpcm, encodeXboxAdpcm } from './audio-preview.js?v=step38-music-preview-replacement';
 // Entity inspector, transforms, register editing, link reassignment and entity copy/paste.
 // All application state and cross-feature operations are injected by the coordinator.
 export function installEntityEditor({
   Viewer, EC, getProject, wadOf, getWad, WS, base, put, unzero, srcEnt,
-  addMaxId, ensureClass, pushAdds, stripLinkRegs, summary, rmList, r3, getAudioPca = null, setTriggerOverlayRender = () => {}, setPathOverlayRender = () => {}
+  addMaxId, ensureClass, pushAdds, stripLinkRegs, summary, rmList, r3, getAudioPca = null, setTriggerOverlayRender = () => {}, setPathOverlayRender = () => {}, onCustomModelChange = () => {}
 }) {
   let clip = null;
+  let customPasteSeq = 0;
   let grab = false;
   let mouse = { x: 0, y: 0 };
   let linkPick = null;
@@ -299,6 +300,7 @@ export function installEntityEditor({
   // Script angles are fixed-point turns: 4096 units = 360 degrees.
   function angleFromBits(v) { const n = (((v >>> 0) + 2048) % 4096 + 4096) % 4096 - 2048; return n * 360 / 4096; }
   function angleToBits(v) { return Math.round((+v || 0) * 4096 / 360) >>> 0; }
+  function customAngleToBits(v) { const deg = (((Number(v) || 0) % 360) + 360) % 360; return Math.round(deg * 4096 / 360) & 4095; }
   function musicCuesFor(wad) {
     const m = /^(\d+)-\d+\.LCS$/i.exec(String(wad || ''));
     if (!m) return null;
@@ -329,15 +331,22 @@ export function installEntityEditor({
   }
 
   const ent = q => {
+    if (q && q.customModel) return q;
     const lv = Viewer.D.find(l => l.id === q.L);
     return lv && lv.ents.find(e => e.i === q.i);
   };
+  function customModelRecord(q) {
+    if (!q || !q.customModel) return null;
+    const records = getProject().customModels && getProject().customModels[q.customModelWad || wadOf(q.L)];
+    return records && Array.isArray(records.instances) ? records.instances.find(x => x && x.id === q.customModelId) || null : null;
+  }
 
-  // The editable record is either a project modification of an original entity
-  // or a project-added instance copied from a source level.
+  // Editable records cover native LCS entities plus project-backed custom-model
+  // placements surfaced by the Models panel as virtual selectable entities.
   function rec(q) {
     const e = ent(q), w = wadOf(q.L);
     if (!e || !w) return null;
+    if (e.customModel) { const custom = customModelRecord(e); return custom ? { e, w, custom } : null; }
     const P = WS(w);
     if (e.added) return { e, w, add: P.adds[e.added - 1] };
     const m = P.mods[e.i] || (P.mods[e.i] = { d: [0, 0, 0], dy: 0, dp: 0, dr: 0, regs: {}, texts: {}, sounds: {} });
@@ -346,6 +355,15 @@ export function installEntityEditor({
 
   function redo(R) {
     const PRJ = getProject();
+    if (R.custom) {
+      const p = R.custom.position || [0, 0, 0], rot = R.custom.rotation || [0, 0, 0];
+      R.e.p = p.slice(0, 3); R.e.r = customAngleToBits(180 + (Number(rot[1]) || 0)); R.e.customScale = (R.custom.scale || [1, 1, 1])[0] || 1;
+      const half = (180 + (Number(rot[1]) || 0)) * Math.PI / 360;
+      R.e.q = [0, Math.sin(half), 0, Math.cos(half)];
+      Viewer.buildEnts(); Viewer.need = true;
+      update();
+      return;
+    }
     if (R.add) {
       const s = srcEnt(R.add), B = base(s);
       put(R.e, {
@@ -369,15 +387,20 @@ export function installEntityEditor({
   }
 
   function setPos(R, p) {
-    if (R.add) R.add.p = p.map(r3);
+    if (R.custom) R.custom.position = p.map(r3);
+    else if (R.add) R.add.p = p.map(r3);
     else R.m.d = p.map((v, k) => r3(v - base(R.e).p[k]));
     redo(R);
   }
   function setYaw(R, deg) {
-    const dy = r3((deg / 360 * 4096) - (R.add ? base(srcEnt(R.add)).r : base(R.e).r));
-    if (R.add) R.add.dy = dy;
-    else R.m.dy = dy;
+    if (R.custom) { const yaw = ((Number(deg) || 0) % 360 + 360) % 360; R.custom.rotation = [0, r3(yaw), 0]; }
+    else { const dy = r3((deg / 360 * 4096) - (R.add ? base(srcEnt(R.add)).r : base(R.e).r)); if (R.add) R.add.dy = dy; else R.m.dy = dy; }
     redo(R);
+  }
+  function setCustomScale(R, value) {
+    const scale = Number(value); if (!Number.isFinite(scale) || scale <= 0) throw 'scale must be a positive finite number';
+    if (!R.custom) return;
+    R.custom.scale = [scale, scale, scale]; redo(R);
   }
   function setTilt(R, key, deg) {
     const v = r3(deg / 360 * 4096);
@@ -427,13 +450,53 @@ export function installEntityEditor({
     commit: (q, path, pathMap) => { const R = rec(q); if (R) setPath(R, path, pathMap); }
   });
 
-  const nudge = (dx, dy, dz, dyaw) => {
+  function currentYawForStep(R, pendingInputYaw = null) {
+    if (Number.isFinite(pendingInputYaw)) return pendingInputYaw;
+    // Custom placements store editor yaw directly in degrees. Native STRAT
+    // entities store their heading in 4096 units per turn.
+    return R.custom
+      ? (Number((R.custom.rotation || [0, 0, 0])[1]) || 0)
+      : ((Number(R.e.r) || 0) / 4096 * 360);
+  }
+
+  function rotateByStep(R, delta, pendingInputYaw = null) {
+    if (!R) return;
+    setYaw(R, currentYawForStep(R, pendingInputYaw) + delta);
+  }
+
+  function bindRotateStep(button, R, delta) {
+    // Keep the yaw input focused until click is dispatched. Its blur/change
+    // handler redraws the inspector and used to detach the button before the
+    // click could run when the user had just typed 15 or -15 degrees.
+    button.onmousedown = event => {
+      if (event && event.button !== undefined && event.button !== 0) return;
+      if (event && typeof event.preventDefault === 'function') event.preventDefault();
+    };
+    button.onclick = () => {
+      const yawInput = Viewer.$('ed_w');
+      const active = typeof document !== 'undefined' ? document.activeElement : null;
+      let pendingYaw = null;
+      if (active && active === yawInput) {
+        const value = String(active.value ?? '').trim();
+        const parsed = Number(value);
+        if (value !== '' && Number.isFinite(parsed)) pendingYaw = parsed;
+      } else if (active && active !== button && typeof active.onchange === 'function') {
+        // Preserve a pending position/scale/tilt edit before update() redraws
+        // the inspector in response to the rotation step.
+        active.onchange.call(active);
+      }
+      // Resolve the current record after committing another focused field;
+      // that commit may itself have rebuilt the inspector and selection row.
+      rotateByStep(rec(Viewer.sel) || R, delta, pendingYaw);
+    };
+  }
+
+  const nudge = (dx, dy, dz) => {
     if (!Viewer.sel) return;
     const R = rec(Viewer.sel);
     if (!R) return;
     const p = R.e.p;
     setPos(R, [p[0] + dx, p[1] + dy, p[2] + dz]);
-    if (dyaw) setYaw(R, (R.e.r / 4096 * 360 + dyaw + 360) % 360);
   };
 
   function update() {
@@ -453,6 +516,37 @@ export function installEntityEditor({
       return;
     }
     const e = R.e, f = (id, v, st) => '<input type=number id=' + id + ' value="' + v + '" step=' + st + ' style="width:62px">';
+    if (R.custom) {
+      const p = R.custom.position || [0, 0, 0], rot = R.custom.rotation || [0, 0, 0], scale = (R.custom.scale || [1, 1, 1])[0] || 1;
+      S.innerHTML = '<b style="color:#8fd">' + Viewer.esc(e.n) + '</b> <span class=h>custom model · ' + Viewer.esc(R.w) + '</span><br>X ' + f('ed_x', p[0], .5) + ' Y ' + f('ed_y', p[1], .5) + ' Z ' + f('ed_z', p[2], .5) + '<br>yaw ' + f('ed_w', +(rot[1] || 0).toFixed(1), 5) + '&deg; &nbsp; scale ' + f('ed_custom_scale', scale, .1) + '<br>step <input type=number id=ed_st value=' + (S.dataset.st || 1) + ' style="width:48px"><br>'
+        + ['-X', '+X', '-Y', '+Y', '-Z', '+Z'].map(t => '<button data-n="' + t + '">' + t + '</button>').join('') + ' <button data-n="L">&#8634;15</button><button data-n="R">&#8635;15</button><br><button id=ed_cp>copy</button> <button id=ed_ps>paste</button> <button id=ed_del>delete</button>'
+        + '<div class=h>Hold G + move mouse to drag on the ground plane. Ctrl+C / Ctrl+V copies this model placement to the cursor. This custom static-model writer currently exports yaw and uniform scale.</div>';
+      const g = id => +Viewer.$(id).value;
+      for (const id of ['ed_x', 'ed_y', 'ed_z']) Viewer.$(id).onchange = () => setPos(R, [g('ed_x'), g('ed_y'), g('ed_z')]);
+      Viewer.$('ed_w').onchange = () => setYaw(R, g('ed_w'));
+      Viewer.$('ed_custom_scale').onchange = () => { try { setCustomScale(R, g('ed_custom_scale')); } catch (error) { Viewer.$('ed_sum').textContent = String(error); } };
+      Viewer.$('ed_st').onchange = () => { S.dataset.st = g('ed_st'); };
+      S.querySelectorAll('button[data-n]').forEach(b => {
+        const t = b.dataset.n;
+        if (t === 'L') { bindRotateStep(b, R, -15); return; }
+        if (t === 'R') { bindRotateStep(b, R, 15); return; }
+        b.onclick = () => {
+          const step = +Viewer.$('ed_st').value || 1, axis = { X: 0, Y: 1, Z: 2 }[t[1]], delta = [0, 0, 0];
+          delta[axis] = t[0] === '-' ? -step : step; nudge(...delta);
+        };
+      });
+      Viewer.$('ed_cp').onclick = copy;
+      Viewer.$('ed_ps').onclick = () => paste();
+      Viewer.$('ed_del').onclick = () => {
+        const models = getProject().customModels || {}, C = models[R.w];
+        if (C && Array.isArray(C.instances)) C.instances = C.instances.filter(x => x && x.id !== R.custom.id);
+        Viewer.sel = null; Viewer.refresh(); Viewer.inspect(null); update();
+      };
+      // Keep the Models panel's placement selector and transform fields in sync
+      // when a custom object is selected directly in the 3D view or changed here.
+      onCustomModelChange(R.w, R.custom.id);
+      return;
+    }
     // Resolve register pointers against the source wad. A small, validated
     // five-language record (text pointer + optional sound-bank pointer) is
     // presented as editable linked data rather than an opaque address.
@@ -643,12 +737,15 @@ export function installEntityEditor({
     Viewer.$('ed_pt').onchange = () => setTilt(R, 'dp', g('ed_pt'));
     Viewer.$('ed_rl').onchange = () => setTilt(R, 'dr', g('ed_rl'));
     Viewer.$('ed_st').onchange = () => { S.dataset.st = g('ed_st'); };
-    S.querySelectorAll('button[data-n]').forEach(b => b.onclick = () => {
-      const s = +Viewer.$('ed_st').value || 1, t = b.dataset.n, ax = { X: 0, Y: 1, Z: 2 }[t[1]], v = [0, 0, 0];
-      if (t == 'L') return nudge(0, 0, 0, -15);
-      if (t == 'R') return nudge(0, 0, 0, 15);
-      v[ax] = t[0] == '-' ? -s : s;
-      nudge(...v, 0);
+    S.querySelectorAll('button[data-n]').forEach(b => {
+      const t = b.dataset.n;
+      if (t === 'L') { bindRotateStep(b, R, -15); return; }
+      if (t === 'R') { bindRotateStep(b, R, 15); return; }
+      b.onclick = () => {
+        const s = +Viewer.$('ed_st').value || 1, ax = { X: 0, Y: 1, Z: 2 }[t[1]], v = [0, 0, 0];
+        v[ax] = t[0] == '-' ? -s : s;
+        nudge(...v);
+      };
     });
     S.querySelectorAll('input[data-k]').forEach(i => i.onchange = () => setReg(R, +i.dataset.k, +i.value));
     S.querySelectorAll('input[data-wave-count-k]').forEach(i => i.onchange = () => setReg(R, +i.dataset.waveCountK, Math.max(0, Math.floor(Number(i.value) || 0))));
@@ -723,6 +820,11 @@ export function installEntityEditor({
     Viewer.$('ed_ps').onclick = () => paste();
     const dl = Viewer.$('ed_del');
     if (dl) dl.onclick = () => {
+      if (R.custom) {
+        const C = getProject().customModels && getProject().customModels[R.w];
+        if (C && Array.isArray(C.instances)) C.instances = C.instances.filter(x => x && x.id !== R.custom.id);
+        Viewer.sel = null; Viewer.refresh(); Viewer.inspect(null); update(); return;
+      }
       const P = WS(R.w);
       if (R.e.added) {
         const rid = R.add && R.add.id;
@@ -829,6 +931,11 @@ export function installEntityEditor({
     if (!Viewer.sel) return;
     const R = rec(Viewer.sel);
     if (!R) return;
+    if (R.custom) {
+      clip = { customModel: true, fromWad: R.w, instance: { ...R.custom, position: (R.custom.position || [0, 0, 0]).slice(), rotation: (R.custom.rotation || [0, 0, 0]).slice(), scale: (R.custom.scale || [1, 1, 1]).slice() } };
+      Viewer.$('ed_sum').textContent = 'copied custom model placement ' + (R.custom.name || R.custom.assetId);
+      return;
+    }
     const H = R.add || R.m;
     const cloneEdits = edits => Object.fromEntries(Object.entries(edits || {}).map(([k, v]) => [k, v && typeof v === 'object' ? { ...v } : v]));
     clip = R.add
@@ -850,6 +957,27 @@ export function installEntityEditor({
   function paste(at) {
     if (!clip || !Viewer.sel) return;
     const w = wadOf(Viewer.sel.L);
+    if (clip.customModel) {
+      try {
+        if (!w) throw 'select a loaded target level first';
+        const source = getProject().customModels && getProject().customModels[clip.fromWad];
+        const sourceAsset = source && (source.assets || []).find(a => a && a.id === clip.instance.assetId);
+        if (!sourceAsset) throw 'the copied custom model asset is no longer available';
+        getProject().customModels = getProject().customModels || {};
+        const dest = getProject().customModels[w] || (getProject().customModels[w] = { assets: [], instances: [] });
+        dest.assets = Array.isArray(dest.assets) ? dest.assets : []; dest.instances = Array.isArray(dest.instances) ? dest.instances : [];
+        if (!dest.assets.some(a => a.id === sourceAsset.id)) dest.assets.push({ ...sourceAsset });
+        const origin = Viewer.sel.p || clip.instance.position || [0, 0, 0];
+        const position = (at || ground(mouse.x, mouse.y, origin[1]) || [origin[0] + 3, origin[1], origin[2] + 3]).map(r3);
+        let id; do { id = 'cmi_paste_' + Date.now().toString(36) + '_' + (++customPasteSeq).toString(36); } while (dest.instances.some(x => x.id === id));
+        const inst = { ...clip.instance, id, position, rotation: (clip.instance.rotation || [0, 0, 0]).slice(), scale: (clip.instance.scale || [1, 1, 1]).slice(), name: (clip.instance.name || 'Custom model') + ' copy' };
+        dest.instances.push(inst); Viewer.refresh();
+        Viewer.sel = Viewer.all.find(o => o.customModel && o.customModelId === id) || null;
+        Viewer.inspect(Viewer.sel); update(); Viewer.need = true;
+        Viewer.$('ed_sum').textContent = 'pasted custom model ' + inst.name + ' at ' + position.map(v => v.toFixed(1)).join(', ');
+      } catch (error) { Viewer.$('ed_sum').textContent = 'cannot paste custom model: ' + (error && error.message || error); }
+      return;
+    }
     const p = at || (() => {
       const sp = Viewer.sel.p, g = ground(mouse.x, mouse.y, Viewer.sel.p[1]);
       return g || [sp[0] + 3, sp[1], sp[2] + 3];

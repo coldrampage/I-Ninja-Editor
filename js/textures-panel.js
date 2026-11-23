@@ -1,7 +1,7 @@
 // Textures panel: browse a level wad's textures, export one as PNG, replace it with your own image, or add a brand-new texture.
 // Edits are stored in the project as base64 TGA (your pixels only) under project.textures[wad].ops and applied by "build patched .vol".
-import { listTextures, listMaterialResources, encodeTga, isPow2 } from './texture-tools.js?v=step43-native-layer-uv';
-import { parseTga, setTexOverride, clearTexOverrides, setTexMode, clearTexModes } from './vol-core.js?v=step43-native-layer-uv';
+import { listTextures, listMaterialResources, encodeTga, isPow2 } from './texture-tools.js?v=step110-rotation-boundary-fix';
+import { parseTga, setTexOverride, clearTexOverrides, setTexMode, clearTexModes } from './vol-core.js?v=step110-rotation-boundary-fix';
 
 export function installTexturePanel({ Viewer, getProject, getWad, onChange = () => {} }) {
   const $ = id => document.getElementById(id);

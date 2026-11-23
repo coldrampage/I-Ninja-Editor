@@ -1,7 +1,9 @@
 import {
   analyseStrats, SiAn, fixups, parseTga, parseVol, parseMaterialResources,
-  siCstr, siDisasm, siPrint, siWad
-} from './vol-core.js?v=step43-native-layer-uv';
+  siCstr, siDisasm, siPrint, siWad, siClass
+} from './vol-core.js?v=step110-rotation-boundary-fix';
+import {parseIninjaModelBundle, parseIninjaModelTextures, base64ToBytes} from './custom-models.js?v=step110-rotation-boundary-fix';
+import {staticModelTemplateA, staticModelTemplateB, collisionModelTemplateA, collisionModelTemplateB, renderTemplateA, renderTemplateB, customModelTemplateLayout} from './custom-model-templates.js?v=step110-rotation-boundary-fix';
 
 // ---- editor core (pure, no DOM). Its dependencies are explicit module imports.
 const EC=(()=>{
@@ -291,8 +293,759 @@ function patchLcs(A0,B0,ops,wadName,srcWad,env){
   for(const v of variants)if(!tc.has(v.alias))names.push(v.name);
   if(!names.length)continue;   // root and all recorded source variants are already present
   const T=SrcCtx(A0,B0),cls=n=>(aliases[n]&&tc.has(aliases[n])?tc.get(aliases[n]):tc.get(n));
-  const r=transplantClasses(A0,B0,S,names,{res:resResolver(S,T).hook,cls,addRes:true,snd:env&&env.snd},{allowDup:variants.length>0,aliases});A0=r.A;B0=r.B}
+  const preserveExternalEvents=k.preserveExternalEvents==null?k.from.w.toLowerCase()===wadName.toLowerCase():!!k.preserveExternalEvents;
+  const r=transplantClasses(A0,B0,S,names,{res:resResolver(S,T).hook,cls,addRes:true,snd:env&&env.snd},{allowDup:variants.length>0,aliases,preserveExternalEvents});A0=r.A;B0=r.B}
  return patchLcs0(A0,B0,ops,wadName,srcWad,env)}
+
+// Stage 1 native custom-model writer. It imports only the embedded 32-bit TGA
+// resources from project assets. No mesh, render part, model descriptor, STRAT
+// class, STRAT instance, collision data or audio data is created or changed.
+function patchCustomTextures(A0,B0,wadName,record){
+ const assets=Array.isArray(record&&record.assets)?record.assets:[];
+ if(!assets.length)return{A:A0,B:B0,added:{assets:0,textures:0,bytes:0},textures:[]};
+ const imp=fixups(B0),texOffsets=imp[0x80000001]||[],d0=new DataView(A0.buffer,A0.byteOffset,A0.byteLength),U0=o=>d0.getUint32(o,true);
+ const candidates=texOffsets.filter(t=>t>=0&&t+0x20<=A0.length&&imp.rel.has(t+0x10));
+ const template=candidates.find(t=>{
+  const rels=[...imp.rel].filter(p=>p>=t&&p<t+0x20).map(p=>p-t);
+  if(rels.length!==1||rels[0]!==0x10)return false;
+  const img=parseTga(A0,t);
+  return !!img&&U0(t+4)===img.w&&U0(t+8)===img.h&&U0(t+24)===1;
+ });
+ if(template==null)throw wadName+': no valid native kind-1 texture resource template was found';
+ const bld=Builder(A0,B0),W=bld.W,cache=new Map(),added=[],sameBytes=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
+ let importedBytes=0;
+ for(let ai=0;ai<assets.length;ai++){
+  const asset=assets[ai];
+  if(!asset||typeof asset.bundle!=='string')throw wadName+': custom model asset '+(asset&&asset.name||ai)+' has no stored .inimodel bundle';
+  let data;
+  try{data=parseIninjaModelTextures(base64ToBytes(asset.bundle))}
+  catch(e){throw wadName+': texture import for '+(asset.name||'asset '+ai)+' failed: '+(e&&e.message||e)}
+  for(const material of data.materials){
+   if(!material.texture)continue;
+   const tga=data.textures.get(material.texture);
+   if(!tga)throw wadName+': missing texture '+material.texture+' in '+(asset.name||'asset '+ai);
+   const hash=fnv(tga),key=hash+':'+tga.length;
+   let resource=(cache.get(key)||[]).find(x=>sameBytes(x.bytes,tga));
+   if(resource){resource.users++;continue}
+   const w=tga[12]|tga[13]<<8,h=tga[14]|tga[15]<<8;
+   const textureOff=bld.alloc(0x20,16),dataOff=bld.alloc(tga.length,16);
+   bld.A.set(A0.subarray(template,template+0x20),textureOff);
+   bld.A.set(tga,dataOff);
+   W(textureOff+4,w);W(textureOff+8,h);W(textureOff+0x10,dataOff);W(textureOff+0x14,tga.length);W(textureOff+0x18,1);
+   const rels=[];bld.addRelTo(rels,textureOff+0x10);bld.addSpec(1,textureOff,rels);
+   resource={bytes:tga,offset:textureOff,width:w,height:h,byteLength:tga.length,users:1,assetId:asset.id||null,assetName:asset.name||data.manifest.name||'Imported model',materialName:material.name,textureName:material.texture};
+   const bucket=cache.get(key)||[];bucket.push(resource);cache.set(key,bucket);added.push(resource);importedBytes+=tga.length;
+  }
+ }
+ if(!added.length)return{A:A0,B:B0,added:{assets:assets.length,textures:0,bytes:0},textures:[]};
+ const out=bld.finish();
+ return{A:out.A,B:out.B,added:{assets:assets.length,textures:added.length,bytes:importedBytes},textures:added.map(({bytes,...x})=>x)};
+}
+
+// Stage 2 diagnostic: add one native custom render graph and redirect an
+// existing visual Strat_SetModel table. No STRAT class or instance is added.
+function patchCustomModelVisual(A0,B0,wadName,record){
+ const assets=Array.isArray(record&&record.assets)?record.assets:[];
+ if(!assets.length)throw wadName+': import a .inimodel asset before building Stage 2';
+ if(assets.length!==1)throw wadName+': Stage 2 currently accepts exactly one imported custom-model asset';
+ const asset=assets[0];
+ if(!asset||typeof asset.bundle!=='string')throw wadName+': the Stage 2 asset has no stored .inimodel bundle';
+ const w=siWad(A0,B0);if(!w)throw wadName+': Stage 2 needs a PC STRAT level';
+ const targetClass=w.classes.find(c=>c.name==='SavePointTop');
+ if(!targetClass)throw wadName+': SavePointTop class was not found';
+ const az=new SiAn(w);
+ // The SavePointTop entry establishes the ordinary visual model. Its event
+ // handlers include unrelated animated model swaps, which Stage 2 must leave alone.
+ siClass(az,targetClass,[]);
+ const modelRefs=az.modelRefs.filter(r=>r.cls==='SavePointTop'&&r.native==='Strat_SetModel');
+ if(modelRefs.length!==1)throw wadName+': expected exactly one ordinary Strat_SetModel table in SavePointTop; found '+modelRefs.length;
+ const targetTable=modelRefs[0].table,baseImp=fixups(B0);
+ if(!baseImp.rel.has(targetTable))throw wadName+': SavePointTop model table is not in the relocation stream';
+ const targetDescriptor=new DataView(A0.buffer,A0.byteOffset,A0.byteLength).getUint32(targetTable,true);
+ if(!targetDescriptor||targetDescriptor>=A0.length)throw wadName+': SavePointTop currently references an invalid visual descriptor';
+ // Use the same complete one-part debug graph as the confirmed test-37 path.
+ const parts=new Set(baseImp[0x80000021]||[]),meshes=new Set(baseImp[0x80000024]||[]),textures=new Set(baseImp[0x80000001]||[]);
+ const d0=new DataView(A0.buffer,A0.byteOffset,A0.byteLength),U0=o=>d0.getUint32(o,true);
+ const relOffsets=(o,n)=>[...baseImp.rel].filter(x=>x>=o&&x<o+n).map(x=>x-o).sort((a,b)=>a-b);
+ const sameOffsets=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
+ const exactRelLayout=(o,n,want)=>o>=0&&o+n<=A0.length&&sameOffsets(relOffsets(o,n),want);
+ const candidates=(parseModels(A0,B0).modelGroups||[]).filter(g=>g.kind==='model'&&Number.isInteger(g.descriptor)&&Array.isArray(g.parts)&&g.parts.length===1)
+  .sort((a,b)=>(Number(b.name==='debug')-Number(a.name==='debug'))||a.descriptor-b.descriptor);
+ let template=null;
+ for(const g of candidates){
+  const desc=g.descriptor,part=g.parts[0].p,mesh=g.parts[0].m;
+  if(!parts.has(part)||!meshes.has(mesh)||!baseImp.rel.has(desc)||U0(desc)!==part)continue;
+  const texture=U0(part+0x10);
+  if(!textures.has(texture)||!baseImp.rel.has(part+0x10)||U0(part+0x34)!==1)continue;
+  const offsets=[0x20,0x28,0x30,0x38],blocks=offsets.map(k=>U0(part+k));
+  if(blocks.some((v,i)=>!v||!baseImp.rel.has(part+offsets[i])))continue;
+  const [data20,data90,data24,meta]=blocks;
+  if(U0(meta+0x0c)!==desc||U0(meta+0x48)!==mesh||!baseImp.rel.has(meta+0x4c))continue;
+  const layouts=[[desc,0x70,[0,0x54]],[part,0x50,[0x0c,0x10,0x20,0x28,0x30,0x38]],[data20,0x20,[]],[data90,0x90,[]],[data24,0x24,[]],[meta,0x60,[0x0c,0x48,0x4c,0x5c]],[mesh,0x30,[0x10,0x18]],[texture,0x20,[0x10]]];
+  if(layouts.some(([o,n,r])=>!exactRelLayout(o,n,r)))continue;
+  const auxPart=U0(desc+0x54),auxMeta=U0(meta+0x5c);
+  if(!auxPart||auxPart>=A0.length||!auxMeta||auxMeta>=A0.length)continue;
+  template={name:g.name,desc,part,blocks,mesh,texture};break;
+ }
+ if(!template||template.name!=='debug')throw wadName+': the complete validated debug render template is unavailable';
+ let data;
+ try{data=parseIninjaModelBundle(base64ToBytes(asset.bundle))}catch(e){throw wadName+': could not read '+(asset.name||'custom model')+': '+(e&&e.message||e)}
+ const manifest=data.manifest;
+ if(data.meshes.length!==1||data.materials.length!==1)throw wadName+': Stage 2 currently supports exactly one mesh and one material';
+ const mesh=data.meshes[0],material=data.materials[0];
+ if(mesh.material!==0)throw wadName+': the custom mesh must use material slot 1';
+ if(material.alphaMode!=='OPAQUE')throw wadName+': Stage 2 only supports OPAQUE materials';
+ if(manifest.collision.type!=='none')throw wadName+': set Collision Type to None for this visual-only stage';
+ const makeStrip=indices=>{
+  if(indices.length<3||indices.length%3)throw wadName+': mesh index buffer must contain complete triangles';
+  const out=[indices[0],indices[1],indices[2]];
+  for(let t=3;t<indices.length;t+=3){const a=indices[t],b=indices[t+1],c=indices[t+2],last=out[out.length-1],odd=((out.length+2)&1)!==0;out.push(last,odd?b:a,odd?b:a,odd?a:b,c)}
+  return Uint16Array.from(out);
+ };
+ const srgbToLinear=x=>{x=Math.max(0,Math.min(1,x));return x<=0.04045?x/12.92:Math.pow((x+0.055)/1.055,2.4)};
+ const linearToSrgb=x=>{x=Math.max(0,Math.min(1,x));return x<=0.0031308?12.92*x:1.055*Math.pow(x,1/2.4)-0.055};
+ const bakeTexture=(d,mat)=>{
+  let bytes;
+  if(mat.texture){bytes=d.textures.get(mat.texture);if(!bytes)throw wadName+': model texture '+mat.texture+' is missing from the bundle';bytes=bytes.slice();if(bytes[2]!==2||bytes[16]!==32)throw wadName+': Stage 2 needs a 32-bit truecolour TGA'}
+  else{bytes=new Uint8Array(18+4*4*4);bytes[2]=2;bytes[12]=4;bytes[14]=4;bytes[16]=32;for(let p=18;p<bytes.length;p+=4)bytes.set([255,255,255,255],p)}
+  const idEnd=18+bytes[0],tw=bytes[12]|(bytes[13]<<8),th=bytes[14]|(bytes[15]<<8),factor=mat.baseColor||[1,1,1,1];
+  if(bytes.length<idEnd+tw*th*4)throw wadName+': model TGA data is truncated';
+  for(let p=idEnd;p<idEnd+tw*th*4;p+=4){bytes[p]=Math.round(linearToSrgb(srgbToLinear(bytes[p]/255)*factor[2])*255);bytes[p+1]=Math.round(linearToSrgb(srgbToLinear(bytes[p+1]/255)*factor[1])*255);bytes[p+2]=Math.round(linearToSrgb(srgbToLinear(bytes[p+2]/255)*factor[0])*255);bytes[p+3]=Math.round(bytes[p+3]*factor[3])}
+  return bytes.subarray(0,idEnd+tw*th*4);
+ };
+ const bld=Builder(A0,B0),W=bld.W,copy=(src,n)=>{const p=bld.alloc(n,16);bld.A.set(A0.subarray(src,src+n),p);return p};
+ const desc=copy(template.desc,0x70),part=copy(template.part,0x50),data20=copy(template.blocks[0],0x20),data90=copy(template.blocks[1],0x90),data24=copy(template.blocks[2],0x24),meta=copy(template.blocks[3],0x60),meshOff=copy(template.mesh,0x30),texOff=copy(template.texture,0x20);
+ const strip=makeStrip(mesh.indices),vertexCount=mesh.vertexCount,indexCount=strip.length;
+ if(!vertexCount||vertexCount>65535||indexCount<3)throw wadName+': custom mesh has invalid vertex/index counts';
+ const vertexOff=bld.alloc(vertexCount*0x20,16),indexOff=bld.alloc(indexCount*2,2),textureData=bakeTexture(data,material),tgaOff=bld.alloc(textureData.length,16);
+ bld.A.set(textureData,tgaOff);
+ const vd=new DataView(bld.A.buffer);
+ for(let v=0;v<vertexCount;v++){
+  const p=vertexOff+v*0x20;
+  // Test 37: native Z reflection for positions/normals, V flip, original triangle order.
+  vd.setFloat32(p,mesh.positions[v*3],true);vd.setFloat32(p+4,mesh.positions[v*3+1],true);vd.setFloat32(p+8,-mesh.positions[v*3+2],true);
+  vd.setFloat32(p+12,mesh.normals[v*3],true);vd.setFloat32(p+16,mesh.normals[v*3+1],true);vd.setFloat32(p+20,-mesh.normals[v*3+2],true);
+  vd.setFloat32(p+24,mesh.uvs[v*2],true);vd.setFloat32(p+28,1-mesh.uvs[v*2+1],true);
+ }
+ for(let i=0;i<indexCount;i++)vd.setUint16(indexOff+2*i,strip[i],true);
+ W(desc,part);bld.addRel(desc);bld.addRel(desc+0x54);bld.A.fill(0,desc+0x20,desc+0x30);bld.A.set(new TextEncoder().encode('INI_SUZANNE'),desc+0x20);
+ W(part+0x0c,meshOff);W(part+0x10,texOff);W(part+0x20,data20);W(part+0x28,data90);W(part+0x30,data24);W(part+0x38,meta);
+ const partRels=[];for(const o of [part+0x0c,part+0x10,part+0x20,part+0x28,part+0x30,part+0x38])bld.addRelTo(partRels,o);
+ W(meta,5);W(meta+4,vertexCount);W(meta+8,indexCount-2);W(meta+12,desc);W(meta+0x20,0);W(meta+0x24,0);W(meta+0x48,meshOff);W(meta+0x4c,texOff);
+ bld.addRel(meta+12);bld.addRel(meta+0x48);bld.addRel(meta+0x4c);bld.addRel(meta+0x5c);
+ W(meshOff+4,0x23);W(meshOff+8,0x20);W(meshOff+12,vertexCount);W(meshOff+16,vertexOff);W(meshOff+20,indexCount);W(meshOff+24,indexOff);
+ const meshRels=[];bld.addRelTo(meshRels,meshOff+16);bld.addRelTo(meshRels,meshOff+24);
+ const tw=textureData[12]|textureData[13]<<8,th=textureData[14]|textureData[15]<<8;
+ W(texOff+4,tw);W(texOff+8,th);W(texOff+16,tgaOff);W(texOff+20,textureData.length);W(texOff+24,1);const textureRels=[];bld.addRelTo(textureRels,texOff+16);
+ bld.addSpec(1,texOff,textureRels);bld.addSpec(0x24,meshOff,meshRels);bld.addSpec(0x21,part,partRels);
+ // Replace only SavePointTop's normal visual-model pointer. Collision references stay untouched.
+ W(targetTable,desc);bld.addRel(targetTable);
+ const built=bld.finish();
+ return{A:built.A,B:built.B,added:{models:1,textures:1,meshes:1,parts:1},templateName:template.name,modelName:'INI_SUZANNE',targetClass:'SavePointTop',targetTable,oldDescriptor:targetDescriptor,newDescriptor:desc,vertexCount,indexCount,textureWidth:tw,textureHeight:th};
+}
+
+
+// Convert a copied, compatible STRAT class into a minimal static custom-model
+// class. The supplied descriptor must already exist in this LCS. The verified
+// template entry begins with `mov rN, &modelTable; Strat_SetModel(rN)`. Keep
+// those instructions and the relocated table slot, redirect the slot to the
+// new descriptor, then replace the next two one-word slots with the in-game-
+// confirmed persistent WAIT(0) -> JMP WAIT(0) idle loop. A class entry must
+// remain alive; returning directly from it caused the earlier Stage 4 crash.
+// This avoids inventing a new native-call encoding or pointer-table format.
+function patchCustomModelStaticScript(A0,B0,wadName,className,modelDescriptor,expectedModelName=null){
+ if(!Number.isInteger(modelDescriptor)||modelDescriptor<=0||modelDescriptor>=A0.length)
+  throw wadName+': the custom static-model descriptor is outside the level data';
+ const w0=siWad(A0,B0);if(!w0)throw wadName+': static custom-model scripting needs a PC STRAT level';
+ const c0=w0.classes.find(c=>c.name===className);if(!c0)throw wadName+': private STRAT class '+className+' was not found';
+ if(c0.ninit!==0)throw wadName+': '+className+' has static variables; refusing the minimal static script';
+ if(c0.events.some(([,handler])=>handler!==0))throw wadName+': '+className+' has event handlers; explicitly support them before making a static prop';
+ const imp=fixups(B0),dv0=new DataView(A0.buffer,A0.byteOffset,A0.byteLength),U0=o=>dv0.getUint32(o,true);
+ if(expectedModelName){
+  const groups=parseModels(A0,B0).modelGroups||[];
+  const modelGroup=groups.find(g=>g.descriptor===modelDescriptor&&g.kind==='model'&&g.name===expectedModelName);
+  if(!modelGroup)throw wadName+': descriptor 0x'+modelDescriptor.toString(16)+' is not the expected custom model graph ('+expectedModelName+')';
+ }else{
+  // In the normal project build the new descriptor is intentionally not
+  // referenced by a script until this function redirects the cloned class'
+  // model table. Validate its native descriptor/part/mesh/texture graph
+  // directly rather than requiring parseModels to discover class ownership yet.
+  const part=U0(modelDescriptor),tex=part&&U0(part+0x10),mesh=part&&U0(part+0x0c),meta=part&&U0(part+0x38);
+  if(!imp.rel.has(modelDescriptor)||!(imp[0x80000021]||[]).includes(part)||!tex||!(imp[0x80000001]||[]).includes(tex)||!mesh||!(imp[0x80000024]||[]).includes(mesh)||!meta||!imp.rel.has(part+0x0c)||!imp.rel.has(part+0x10)||!imp.rel.has(part+0x38)||U0(meta+0x0c)!==modelDescriptor||U0(meta+0x48)!==mesh||U0(meta+0x4c)!==tex)
+   throw wadName+': descriptor 0x'+modelDescriptor.toString(16)+' is not a complete registered custom render graph';
+ }
+ const az=new SiAn(w0);siClass(az,c0,[]);
+ const refs=az.modelRefs.filter(r=>r.cls===className&&r.native==='Strat_SetModel');
+ if(refs.length!==1)throw wadName+': '+className+' must have exactly one Strat_SetModel table; found '+refs.length;
+ const ref=refs[0],modelCall=az.ins.get(ref.call),modelLoad=modelCall&&az.ins.get(modelCall.off-8);
+ if(!modelCall||modelCall.mn!=='native'||modelCall.form!=='nat_b'||modelCall.size!==2||az.native(modelCall)[0]!=='Strat_SetModel')
+  throw wadName+': '+className+' does not use the supported two-word Strat_SetModel native call';
+ if(!modelLoad||modelLoad.off!==c0.entry||modelLoad.mn!=='mov'||modelLoad.form!=='ri32'||modelLoad.a!==modelCall.b||!imp.rel.has(modelLoad.off+4))
+  throw wadName+': '+className+' does not begin with the supported relocated model-table load';
+ if(ref.table!==new DataView(A0.buffer,A0.byteOffset,A0.byteLength).getUint32(modelLoad.off+4,true))
+  throw wadName+': the script load and model-reference analysis disagree about the model table';
+ // The bundled static template intentionally stores an empty model table.
+ // Add the descriptor-slot relocation when we first populate it.
+ const outputB=imp.rel.has(ref.table)?B0:mergeB(B0,[ref.table],[]);
+ const block=w0.blocks.find(([p,n])=>p<=c0.entry&&c0.entry<p+4*n);
+ if(!block||block[0]+8!==c0.entry)throw wadName+': '+className+' entry is not at the start of a complete code block';
+ const idleWaitOff=modelCall.off+4*modelCall.size;
+ const idleJumpOff=idleWaitOff+4;
+ const waitSlot=az.ins.get(idleWaitOff),jumpSlot=az.ins.get(idleJumpOff);
+ // A STRAT entry is a persistent VM script. The previously tested RET
+ // terminates a call frame, but a class entry is not a called subroutine.
+ // Reuse two one-word instructions in the private code block for the native
+ // game's ordinary WAIT(0) + JMP loop, yielding once per frame indefinitely.
+ if(!waitSlot||waitSlot.off!==idleWaitOff||waitSlot.size!==1||!jumpSlot||jumpSlot.off!==idleJumpOff||jumpSlot.size!==1)
+  throw wadName+': '+className+' has no two safe one-word instruction slots after Strat_SetModel for the idle loop';
+ if(idleJumpOff+4>block[0]+4*block[1]-8)
+  throw wadName+': '+className+' does not have enough private code-block space for the idle loop';
+ if(imp.rel.has(idleWaitOff)||imp.rel.has(idleJumpOff))
+  throw wadName+': idle-loop instruction slots unexpectedly contain relocations';
+ // No other class entry may enter the middle of the cloned private block.
+ if(w0.classes.some(c=>c.name!==className&&c.entry>=block[0]+8&&c.entry<block[0]+4*block[1]-8))
+  throw wadName+': '+className+' shares its entry-code block with another class';
+ const waitWord=0x47000000; // Existing native WAIT(0) encoding used by the source game scripts.
+ const jumpDeltaWords=(idleWaitOff-(idleJumpOff+4))/4;
+ if(!Number.isInteger(jumpDeltaWords)||jumpDeltaWords< -32768||jumpDeltaWords>32767)
+  throw wadName+': idle-loop jump is outside the SI j16 range';
+ const jumpWord=(120<<24)|(jumpDeltaWords&0xffff); // JMP back to WAIT(0).
+ const A=A0.slice(),dv=new DataView(A.buffer,A.byteOffset,A.byteLength);
+ const oldDescriptor=dv.getUint32(ref.table,true);
+ dv.setUint32(ref.table,modelDescriptor,true);
+ dv.setUint32(idleWaitOff,waitWord,true);
+ dv.setUint32(idleJumpOff,jumpWord,true);
+ const checkWad=siWad(A,outputB),checkClass=checkWad.classes.find(c=>c.name===className);
+ const checkAz=new SiAn(checkWad);siClass(checkAz,checkClass,[]);
+ const waitIns=checkAz.ins.get(idleWaitOff),jumpIns=checkAz.ins.get(idleJumpOff);
+ if(!waitIns||waitIns.mn!=='wait'||waitIns.form!=='w_i8'||!jumpIns||jumpIns.mn!=='jmp'||jumpIns.targets[0]!==idleWaitOff)
+  throw wadName+': idle script does not form a valid WAIT(0) -> JMP -> WAIT(0) loop';
+ const reached=checkAz.reach([checkClass.entry])[0];
+ if(reached.length!==4||reached[0]!==checkClass.entry||reached[1]!==modelCall.off||reached[2]!==idleWaitOff||reached[3]!==idleJumpOff)
+  throw wadName+': static entry did not reduce to model-load, Strat_SetModel and a WAIT/JMP idle loop';
+ if(checkAz.modelRefs.filter(r=>r.cls===className&&r.native==='Strat_SetModel').length!==1)
+  throw wadName+': the new static script no longer resolves its Strat_SetModel table';
+ if(!fixups(outputB).rel.has(ref.table)||dv.getUint32(ref.table,true)!==modelDescriptor)
+  throw wadName+': custom model table relocation was not preserved';
+ return{A,B:outputB,className,modelTable:ref.table,oldDescriptor,newDescriptor:modelDescriptor,entry:checkClass.entry,modelCall:modelCall.off,idleWaitOff,idleJumpOff,reachable:reached};
+}
+
+// Self-contained native custom-model templates. These tiny STRAT WADs are
+// sanitised copies of the previously validated retail script layouts; the
+// complete one-part PC render-resource graph is bundled separately.
+const CUSTOM_MODEL_BUILTINS=Object.freeze({
+ static:'@builtin/ininja-static-model-template',
+ collision:'@builtin/ininja-collision-model-template',
+ render:'@builtin/ininja-render-graph-template'
+});
+const GENERIC_COLLISION_BUILTIN='@builtin/ininja-generic-collision-template';
+const GENERIC_COLLISION_CLASS='INIGenericCollision';
+const GENERIC_COLLISION_ALIAS_BASE='INIEditorGenericCollision';
+const GENERIC_COLLISION_SOURCE_CLASS='INICollision_Template';
+const customModelBuiltinCache=new Map();
+function getCustomModelBuiltin(kind){
+ const key=CUSTOM_MODEL_BUILTINS[kind];if(!key)throw'unknown bundled custom-model template '+kind;
+ if(customModelBuiltinCache.has(kind))return customModelBuiltinCache.get(kind);
+ const pair=kind==='static'?[staticModelTemplateA,staticModelTemplateB]:kind==='collision'?[collisionModelTemplateA,collisionModelTemplateB]:[renderTemplateA,renderTemplateB];
+ const A=base64ToBytes(pair[0]),B=base64ToBytes(pair[1]),w=siWad(A,B);
+ if(!w)throw'embedded '+kind+' custom-model template is not a valid PC STRAT WAD';
+ const value={A,B,w,name:key};customModelBuiltinCache.set(kind,value);return value;
+}
+function removeRelocationRecord(B0,offset){
+ const dv=new DataView(B0.buffer,B0.byteOffset,B0.byteLength),words=[];let i=0,expectImportLocation=false;
+ while(i+4<=B0.length){const value=dv.getUint32(i,true);i+=4;if(expectImportLocation){words.push(value);expectImportLocation=false;continue;}if(value>=0x80000000){words.push(value);expectImportLocation=true;continue;}if(value!==offset)words.push(value)}
+ const out=new Uint8Array(words.length*4),od=new DataView(out.buffer);words.forEach((value,index)=>od.setUint32(index*4,value,true));return out;
+}
+function rebuildNativeCallChain(A,B,blockOff){
+ const wad=siWad(A,B);if(!wad)throw'cannot rebuild a native-call chain in an invalid STRAT WAD';
+ const block=wad.blocks.find(([off])=>off===blockOff);if(!block)throw'native-call chain code block @0x'+blockOff.toString(16)+' was not found';
+ const az=new SiAn(wad),blockEnd=blockOff+block[1]*4;
+ const operands=[...az.ins.values()].filter(ins=>ins.off>=blockOff&&ins.off<blockEnd&&(ins.mn==='native'||ins.mn==='native_y')).map(ins=>ins.off+4).sort((a,b)=>a-b);
+ if(!operands.length)throw'generic collision code block has no native calls';
+ const dv=new DataView(A.buffer,A.byteOffset,A.byteLength),U=o=>dv.getUint32(o,true),W=(o,v)=>dv.setUint32(o,v>>>0,true);
+ W(blockOff,(operands[0]-blockOff)/4);
+ operands.forEach((off,index)=>{const next=index+1<operands.length?(operands[index+1]-off)/4:0xffff;W(off,(U(off)&0xffff0000)|next)});
+ // Validate the linked walk, not merely the linear disassembly.
+ const seen=[],expected=new Set(operands);let cursor=blockOff+U(blockOff)*4;
+ for(let guard=0;guard<=operands.length;guard++){
+  if(!expected.has(cursor)||seen.includes(cursor))throw'native-call chain leaves the decoded native operands or loops at @0x'+cursor.toString(16);
+  seen.push(cursor);const delta=U(cursor)&0xffff;if(delta===0xffff)break;cursor+=delta*4;
+ }
+ if(seen.length!==operands.length||seen.some((off,index)=>off!==operands[index]))throw'native-call chain does not cover every native call in code order';
+ return{A,B,nativeOperands:operands};
+}
+function getGenericCollisionBuiltin(){
+ const cacheKey='genericCollision';if(customModelBuiltinCache.has(cacheKey))return customModelBuiltinCache.get(cacheKey);
+ const base=getCustomModelBuiltin('collision');let A=base.A.slice(),B=base.B.slice();let wad=siWad(A,B);
+ const c=wad&&wad.classes.find(x=>x.name===GENERIC_COLLISION_SOURCE_CLASS),ci=c&&wad.classes.indexOf(c),ii=wad&&wad.instances.findIndex(x=>x.cls===ci);
+ if(!c||ii<0)throw'embedded collision template is missing its class or instance shell';
+ const sourceInstance=wad.instances[ii],dv=new DataView(A.buffer,A.byteOffset,A.byteLength),U=o=>dv.getUint32(o,true),W=(o,v)=>dv.setUint32(o,v>>>0,true),H=(o,v)=>dv.setUint16(o,v,true);
+ if(c.events.length!==2||c.events[0][0]!==0x00b50008||c.events[1][0]!==0x00b60008||c.events.some(([,handler])=>!handler))throw'embedded collision template does not have the verified two event slots';
+ const originalEntry=c.entry,entryCallOffset=originalEntry+8,entryCall=new SiAn(wad).ins.get(entryCallOffset);
+ if(!entryCall||entryCall.mn!=='native'||entryCall.form!=='nat_b'||new SiAn(wad).native(entryCall)?.[0]!=='Strat_SetModelCollide')throw'embedded collision template entry does not contain the expected Strat_SetModelCollide call';
+ const pool=U(c.off+0x20),namePtr=U(c.off+4),oldName=siCstr(A,namePtr),genericBytes=new TextEncoder().encode(GENERIC_COLLISION_CLASS);
+ if(namePtr!==pool+0x19||!oldName||genericBytes.length>oldName.length)throw'embedded collision template cannot preserve its required pool/name layout';
+ // Retain the template's Heartbeat prefix and exact +0x19 name placement.
+ A.fill(0,namePtr,namePtr+oldName.length+1);A.set(genericBytes,namePtr);
+ // r0 carries each instance's {model descriptor, CollMesh} table. The old
+ // literal MOV+r2 table load becomes unreachable, and its relocation is removed.
+ W(originalEntry+4,0);const nativeWord=U(entryCallOffset);W(entryCallOffset,nativeWord&0xffff00ff);W(c.off+8,entryCallOffset);H(c.off+0x18,3);
+ B=removeRelocationRecord(B,originalEntry+4);if(fixups(B).rel.has(originalEntry+4))throw'generic collision template retained its obsolete literal-table relocation';
+ // Supply a real three-register instance init block in the bundled source WAD:
+ // r0 is filled per placement, r1 is 100%, and r2 disables ground probing.
+ const initOff=(A.length+3)&~3,nextA=new Uint8Array(initOff+12);nextA.set(A);const idv=new DataView(nextA.buffer);
+ idv.setUint32(initOff,0,true);idv.setUint32(initOff+4,0x42c80000,true);idv.setUint32(initOff+8,0,true);
+ idv.setUint32(sourceInstance.off+0x2c,initOff,true);A=nextA;
+ if(!fixups(B).rel.has(sourceInstance.off+0x2c))throw'generic collision instance template has no init-array relocation';
+ wad=siWad(A,B);const rebuiltClass=wad.classes.find(x=>x.name===GENERIC_COLLISION_CLASS),blockOff=rebuiltClass&&wad.U(rebuiltClass.off+0x0c);
+ if(!rebuiltClass||rebuiltClass.ninit!==3||rebuiltClass.entry!==entryCallOffset)throw'generic collision source template failed register/entry rewrite';
+ const chain=rebuildNativeCallChain(A,B,blockOff);A=chain.A;B=chain.B;wad=siWad(A,B);
+ const finalClass=wad.classes.find(x=>x.name===GENERIC_COLLISION_CLASS),az=new SiAn(wad);siClass(az,finalClass,finalClass.events.map(([key,handler],i)=>[i,key,handler]));
+ const call=az.ins.get(finalClass.entry),init=wad.instances[ii].init,fd=new DataView(A.buffer,A.byteOffset,A.byteLength);
+ if(!call||call.mn!=='native'||call.form!=='nat_b'||call.b!==0||az.native(call)?.[0]!=='Strat_SetModelCollide'||finalClass.events.some(([,handler])=>!az.ins.has(handler))||
+  fd.getUint32(init,true)!==0||fd.getUint32(init+4,true)!==0x42c80000||fd.getUint32(init+8,true)!==0)
+  throw'generic collision source template failed its entry, handler or init-register verification';
+ const value={A,B,w:wad,name:GENERIC_COLLISION_BUILTIN,sourceInstanceIndex:ii,sourceClassName:GENERIC_COLLISION_CLASS,nativeOperands:chain.nativeOperands};
+ customModelBuiltinCache.set(cacheKey,value);return value;
+}
+function customModelSourceResolver(srcWad){
+ return name=>{if(name===GENERIC_COLLISION_BUILTIN)return getGenericCollisionBuiltin();for(const kind of Object.keys(CUSTOM_MODEL_BUILTINS))if(name===CUSTOM_MODEL_BUILTINS[kind])return getCustomModelBuiltin(kind);return typeof srcWad==='function'?srcWad(name):null};
+}
+function validateGenericCollisionClass(A,B,wadName,c,className=GENERIC_COLLISION_CLASS){
+ const wad=siWad(A,B);if(!wad||!c)throw wadName+': generic collision class is missing from the target WAD';
+ const d=new DataView(A.buffer,A.byteOffset,A.byteLength),U=o=>d.getUint32(o,true),imp=fixups(B),name=siCstr(A,U(c.off+4)),pool=U(c.off+0x20),blockOff=U(c.off+0x0c),block=wad.blocks.find(([p])=>p===blockOff);
+ if(name!==className||c.ninit!==3||c.events.length!==2||U(c.off+4)-pool!==0x19||
+  !imp.rel.has(c.off+4)||!imp.rel.has(c.off+0x20)||!imp.rel.has(c.off+0x1c)||!imp.rel.has(c.off+8)||!imp.rel.has(c.off+0x0c)||!block)
+  throw wadName+': existing '+className+' class has incompatible name/pool/register/event/relocation metadata';
+ const az=new SiAn(wad);siClass(az,c,c.events.map(([key,handler],i)=>[i,key,handler]));
+ const call=az.ins.get(c.entry);if(!call||call.mn!=='native'||call.form!=='nat_b'||call.b!==0||az.native(call)?.[0]!=='Strat_SetModelCollide')
+  throw wadName+': existing '+className+' class does not begin with Strat_SetModelCollide(r0)';
+ const expected=[0x00b50008,0x00b60008];if(c.events.some(([key,handler],i)=>key!==expected[i]||!handler||handler<blockOff||handler>=blockOff+block[1]*4||az.ins.get(handler)?.mn!=='mov'||az.ins.get(handler+4)?.mn!=='endevent'))
+  throw wadName+': existing '+className+' event handlers are not the verified in-block no-op handlers';
+ const native=[...az.ins.values()].filter(ins=>ins.off>=blockOff&&ins.off<blockOff+block[1]*4&&(ins.mn==='native'||ins.mn==='native_y')).sort((a,b)=>a.off-b.off);
+ if(native.length!==3||az.native(native[0])?.[0]!=='Strat_SetModelCollide'||native.filter(ins=>az.native(ins)?.[0]==='Strat_EnableEvent').length!==2)
+  throw wadName+': existing '+className+' native entry/event sequence is not the verified three-call template';
+ // Walk the native linked list independently for every installed class.
+ const operands=native.map(ins=>ins.off+4),expectedSet=new Set(operands);let cursor=blockOff+U(blockOff)*4,visited=[];
+ for(let n=0;n<=operands.length;n++){if(!expectedSet.has(cursor)||visited.includes(cursor))throw wadName+': '+className+' native-call chain is invalid';visited.push(cursor);const delta=U(cursor)&0xffff;if(delta===0xffff)break;cursor+=delta*4}
+ if(visited.length!==operands.length||visited.some((off,i)=>off!==operands[i]))throw wadName+': '+className+' native-call chain does not cover every call';
+ return{classOff:c.off,entry:c.entry,codeBlock:blockOff,nativeCalls:native.length,className};
+}
+function compatibleGenericCollisionClass(A,B,wadName,wad,className){
+ const existing=wad.classes.find(c=>c.name===className);if(!existing)return null;
+ try{return validateGenericCollisionClass(A,B,wadName,existing,className)}catch{return null}
+}
+function installGenericCollisionClass(A0,B0,wadName,resolveSource){
+ let wad=siWad(A0,B0);if(!wad)throw wadName+': generic collision installation needs a PC STRAT WAD';
+ // Reuse the established class only when it exactly matches the editor's
+ // verified template. Older editor builds and some user levels may already
+ // contain a different class with this same display name. Never overwrite or
+ // silently bind to that unrelated implementation: install/reuse a private
+ // editor class alongside it instead.
+ let className=GENERIC_COLLISION_CLASS,existing=wad.classes.find(c=>c.name===className);
+ if(existing){
+  const valid=compatibleGenericCollisionClass(A0,B0,wadName,wad,className);
+  if(valid)return{A:A0,B:B0,classOff:valid.classOff,className,installed:false};
+  let candidate=GENERIC_COLLISION_ALIAS_BASE;
+  for(let suffix=0;suffix<256;suffix++){
+   const name=suffix?GENERIC_COLLISION_ALIAS_BASE+suffix:GENERIC_COLLISION_ALIAS_BASE;
+   const found=wad.classes.find(c=>c.name===name);
+   if(!found){candidate=name;break}
+   const reusable=compatibleGenericCollisionClass(A0,B0,wadName,wad,name);
+   if(reusable)return{A:A0,B:B0,classOff:reusable.classOff,className:name,installed:false};
+  }
+  if(wad.classes.some(c=>c.name===candidate))throw wadName+': could not find an unused editor generic-collision class name';
+  className=candidate;
+ }
+ const source=getGenericCollisionBuiltin(),sourceClass=source.w.classes.find(c=>c.name===GENERIC_COLLISION_CLASS);
+ const variants=className===GENERIC_COLLISION_CLASS?[]:[{name:GENERIC_COLLISION_CLASS,alias:className}];
+ const copied=patchLcs(A0,B0,{classes:[{from:{w:GENERIC_COLLISION_BUILTIN,name:GENERIC_COLLISION_CLASS},variants,preserveExternalEvents:false}]},wadName,resolveSource,{});
+ let A=copied.A,B=copied.B;wad=siWad(A,B);const c=wad&&wad.classes.find(x=>x.name===className);
+ if(!c)throw wadName+': failed to transplant the bundled '+GENERIC_COLLISION_CLASS+' class as '+className;
+ // The game requires the copied class-name pointer to remain adjacent to the
+ // class-owned Heartbeat pool. Keep the verified +0x19 string placement even
+ // when a private alias is used to avoid an incompatible pre-existing class.
+ const sourcePool=source.w.U(sourceClass.off+0x20),bld=Builder(A,B),pool=bld.alloc(0x19+className.length+1,4);
+ bld.A.set(source.A.subarray(sourcePool,sourcePool+0x18),pool);bld.A[pool+0x18]=0;
+ const nameBytes=new TextEncoder().encode(className);bld.A.set(nameBytes,pool+0x19);bld.A[pool+0x19+nameBytes.length]=0;
+ bld.W(c.off+0x20,pool);bld.addRel(c.off+0x20);bld.W(c.off+4,pool+0x19);bld.addRel(c.off+4);
+ const fixed=bld.finish();A=fixed.A;B=fixed.B;wad=siWad(A,B);const installed=wad.classes.find(x=>x.name===className);
+ validateGenericCollisionClass(A,B,wadName,installed,className);
+ return{A,B,classOff:installed.off,className,installed:true};
+}
+function addGenericCollisionInstance(A0,B0,wadName,resolveSource,pos,targetHeadingBits,id,className=GENERIC_COLLISION_CLASS){
+ const source=getGenericCollisionBuiltin(),sourceInstance=source.w.instances[source.sourceInstanceIndex];
+ const heading=new DataView(source.A.buffer,source.A.byteOffset,source.A.byteLength).getFloat32(sourceInstance.off+0x20,true);
+ if(!Number.isFinite(heading))throw'generic collision instance template has an invalid heading';
+ const variants=className===GENERIC_COLLISION_CLASS?[]:[{name:GENERIC_COLLISION_CLASS,alias:className}];
+ const classes=className===GENERIC_COLLISION_CLASS?[]:[{from:{w:GENERIC_COLLISION_BUILTIN,name:GENERIC_COLLISION_CLASS},variants,preserveExternalEvents:false}];
+ const patched=patchLcs(A0,B0,{classes,adds:[{id,from:{w:GENERIC_COLLISION_BUILTIN,i:source.sourceInstanceIndex},p:pos,dy:targetHeadingBits-heading}]},wadName,resolveSource,{});
+ const wad=siWad(patched.A,patched.B),ci=wad.classes.findIndex(c=>c.name===className),instance=wad.instances[wad.instances.length-1];
+ if(ci<0||!instance||instance.cls!==ci||!instance.init)throw wadName+': failed to append a STRAT instance of '+className;
+ const imp=fixups(patched.B),d=new DataView(patched.A.buffer,patched.A.byteOffset,patched.A.byteLength),U=o=>d.getUint32(o,true);
+ if(!imp.rel.has(instance.off+0x28)||!imp.rel.has(instance.off+0x2c)||U(instance.init)!==0||U(instance.init+4)!==0x42c80000||U(instance.init+8)!==0)
+  throw wadName+': new generic collision instance has invalid class/init pointers or initial registers';
+ return{A:patched.A,B:patched.B,classOff:wad.classes[ci].off,instanceOff:instance.off,initOff:instance.init,className};
+}
+// Native custom-model writer. It no longer requires a named object or render
+// model to exist in the destination level: STRAT templates and the complete
+// one-part opaque PC renderer graph are bundled with the editor. Bounds-based
+// Box collision continues to use the exact in-game-confirmed CollMesh topology.
+function patchCustomModels(A0,B0,wadName,record,srcWad,sourceNames=[]){
+ const instances=Array.isArray(record&&record.instances)?record.instances:[];
+ if(!instances.length)return{A:A0,B:B0,added:{instances:0,models:0,textures:0,meshes:0,parts:0}};
+ if(!siWad(A0,B0))throw wadName+': custom model output needs a PC STRAT level';
+ const staticClassName=customModelTemplateLayout.staticClass,collisionClassName=customModelTemplateLayout.collisionClass;
+ const staticTemplateName=CUSTOM_MODEL_BUILTINS.static,collisionTemplateName=CUSTOM_MODEL_BUILTINS.collision;
+ const resolveSource=customModelSourceResolver(srcWad);
+ const assetMap=new Map((record.assets||[]).map(a=>[a.id,a]));
+ const collisionTypes=new Set(['none','box','sphere','cylinder','mesh']);
+ const manifestCache=new Map();
+ const manifestOf=a=>{
+  if(!a||typeof a.bundle!=='string')return{};
+  if(manifestCache.has(a.id))return manifestCache.get(a.id);
+  let result={};try{result=parseIninjaModelBundle(base64ToBytes(a.bundle)).manifest.collision||{}}catch{}
+  manifestCache.set(a.id,result);return result;
+ };
+ const effectiveCollisionType=(a,inst)=>{
+  const requested=inst?.collisionType??a?.collisionType??manifestOf(a).type??'none';
+  const value=String(requested).toLowerCase();return collisionTypes.has(value)?value:'none';
+ };
+ const effectiveCollisionTags=(a,inst,type)=>{
+  const manifest=manifestOf(a);
+  // Box and the legacy primitive Cylinder have always shipped with a standable
+  // upward cap. Mesh keeps the Step 104 slide-y default; Sphere remains slide-y.
+  // The old asset.collisionTopTag field is honoured for Mesh only because it was
+  // previously exposed only for that type. New controls are stored per instance.
+  let top=inst?.collisionTopTag;
+  if(!['standable','slidey'].includes(top)){
+   if(['standable','slidey'].includes(a?.collisionUpwardTagMode))top=a.collisionUpwardTagMode;
+   else if(type==='mesh')top=(['standable','slidey'].includes(a?.collisionTopTag)?a.collisionTopTag:manifest.topTagMode)||'slidey';
+   else if(['standable','slidey'].includes(manifest.topTagModeExplicit?manifest.topTagMode:null))top=manifest.topTagMode;
+   else top=(type==='box'||type==='cylinder')?'standable':'slidey';
+  }
+  let side=inst?.collisionSideTag;
+  if(!['walkable','slidey'].includes(side))side=(['walkable','slidey'].includes(a?.collisionSideTag)?a.collisionSideTag:manifest.sideTagMode)||'slidey';
+  if(!['standable','slidey'].includes(top))top='slidey';
+  if(!['walkable','slidey'].includes(side))side='slidey';
+  return{topTagMode:top,sideTagMode:side};
+ };
+ const needsStaticTemplate=instances.some(inst=>effectiveCollisionType(assetMap.get(inst.assetId),inst)!=='box');
+ const collisionEventsAreVerifiedNoops=(wad,c)=>{
+  if(!c||c.events.length!==2||c.events[0][0]!==0x00b50008||c.events[1][0]!==0x00b60008||c.events.some(([,h])=>!h))return false;
+  const az=new SiAn(wad);siClass(az,c,c.events.map(([key,handler],i)=>[i,key,handler]));
+  return c.events.every(([,handler])=>az.ins.get(handler)?.mn==='mov'&&az.ins.get(handler+4)?.mn==='endevent');
+ };
+ const assertBundledStratIsSelfContained=(bundle,c,label)=>{
+  const report=classReports(bundle.A,bundle.B)[c&&c.name];
+  if(!report||report.kinds.sound||report.kinds['level data']||report.classes.length||report.strs.length||report.assets)
+   throw'embedded '+label+' STRAT template contains a level-specific dependency: '+JSON.stringify(report);
+ };
+ let templateSource=null,sourceInstanceIndex=-1,sourceHeadingBits=null;
+ if(needsStaticTemplate){
+  templateSource=getCustomModelBuiltin('static');
+  const ci=templateSource.w.classes.findIndex(c=>c.name===staticClassName);
+  if(ci<0)throw'embedded static custom-model template is missing '+staticClassName;
+  const sourceClass=templateSource.w.classes[ci];sourceInstanceIndex=templateSource.w.instances.findIndex(x=>x.cls===ci);
+  if(sourceInstanceIndex<0||sourceClass.ninit!==0||sourceClass.events.some(([,handler])=>handler!==0))throw'embedded static custom-model STRAT template has an unexpected layout';
+  assertBundledStratIsSelfContained(templateSource,sourceClass,'static');
+  const sourceInstance=templateSource.w.instances[sourceInstanceIndex],sd=new DataView(templateSource.A.buffer,templateSource.A.byteOffset,templateSource.A.byteLength),U=o=>sd.getUint32(o,true);
+  const initHeader=U(sourceInstance.off+0x28),initRegs=initHeader&&templateSource.w.U(initHeader+0x18);
+  if(U(sourceInstance.off+0x2c)===0||U(sourceInstance.off+0x30)!==0||U(sourceInstance.off+0x34)!==0||initRegs!==0)throw'embedded static custom-model template instance has unsupported registers/path/shape';
+  const az=new SiAn(templateSource.w);siClass(az,sourceClass,[]);
+  const refs=az.modelRefs.filter(r=>r.cls===staticClassName&&r.native==='Strat_SetModel');
+  if(refs.length!==1)throw'embedded static custom-model template does not contain exactly one Strat_SetModel call';
+  sourceHeadingBits=new DataView(templateSource.A.buffer,templateSource.A.byteOffset,templateSource.A.byteLength).getFloat32(sourceInstance.off+0x20,true);
+  if(!Number.isFinite(sourceHeadingBits))throw'embedded static custom-model template has an invalid starting heading';
+ }
+ // Install the complete renderer scaffold from the bundled debug-model graph.
+ // The source graph contains descriptor/metadata tails which ordinary resource
+ // boundary inference truncates, so override those two exact object extents.
+ const renderSource=getCustomModelBuiltin('render'),renderLayout=customModelTemplateLayout.render;
+ const renderCtx=SrcCtx(renderSource.A,renderSource.B),renderNext=renderCtx.next.bind(renderCtx);
+ renderCtx.sizes=new Map([[renderLayout.descriptor,renderLayout.descriptorSize],[renderLayout.metadata,renderLayout.metadataSize]]);
+ // The bundled graph is deliberately a one-part template. Do not split its
+ // mesh on copy: its render part and metadata must retain the same mesh pointer.
+ renderCtx.meshUse=new Map();
+ renderCtx.next=o=>renderCtx.sizes.has(o)?o+renderCtx.sizes.get(o):renderNext(o);
+ let A=A0,B=B0;
+ const graphBuilder=Builder(A,B),graphMap=copyGraph(renderCtx,graphBuilder,[renderLayout.descriptor],{}, {addRes:true}),graphOut=graphBuilder.finish();
+ A=graphOut.A;B=graphOut.B;
+ const graphU=o=>new DataView(A.buffer,A.byteOffset,A.byteLength).getUint32(o,true);
+ const mapped=(sourceOff,label)=>{const targetOff=graphMap.get(sourceOff);if(!Number.isInteger(targetOff)||targetOff<=0||targetOff>=A.length)throw'could not install bundled PC render scaffold '+label;return targetOff};
+ const desc=mapped(renderLayout.descriptor,'descriptor'),part=mapped(renderLayout.part,'part'),auxPart=mapped(renderLayout.auxPart,'auxiliary part');
+ const data20=mapped(renderLayout.data20,'data20 block'),data90=mapped(renderLayout.data90,'data90 block'),data24=mapped(renderLayout.data24,'data24 block');
+ const meta=mapped(renderLayout.metadata,'metadata'),auxMeta=mapped(renderLayout.auxMetadata,'auxiliary metadata'),texture=mapped(renderLayout.texture,'texture');
+ const mesh=graphU(part+0x0c);
+ const graphCheck={desc:[graphU(desc),part],auxPart:[graphU(desc+0x54),auxPart],texture:[graphU(part+0x10),texture],data20:[graphU(part+0x20),data20],data90:[graphU(part+0x28),data90],data24:[graphU(part+0x30),data24],meta:[graphU(part+0x38),meta],metaDesc:[graphU(meta+0x0c),desc],metaMesh:[graphU(meta+0x48),mesh],auxMeta:[graphU(meta+0x5c),auxMeta]};
+ if(Object.values(graphCheck).some(([actual,expected])=>actual!==expected))throw'bundled PC render scaffold failed its relocated pointer-graph checks: '+JSON.stringify(graphCheck);
+ const targetImp=fixups(B),targetRelOffsets=(o,n)=>[...targetImp.rel].filter(x=>x>=o&&x<o+n).map(x=>x-o).sort((a,b)=>a-b);
+ const exact=(o,n,want)=>{const got=targetRelOffsets(o,n);return got.length===want.length&&got.every((v,i)=>v===want[i])};
+ const targetResources={parts:new Set(targetImp[0x80000021]||[]),meshes:new Set(targetImp[0x80000024]||[]),textures:new Set(targetImp[0x80000001]||[])};
+ if(!targetResources.parts.has(part)||!targetResources.parts.has(auxPart)||!targetResources.meshes.has(mesh)||!targetResources.textures.has(texture)||
+  !exact(desc,0x70,[0,0x54])||!exact(part,0x50,[0x0c,0x10,0x20,0x28,0x30,0x38])||
+  !exact(data20,0x20,[])||!exact(data90,0x90,[])||!exact(data24,0x24,[])||!exact(meta,0x60,[0x0c,0x48,0x4c,0x5c])||
+  !exact(mesh,0x30,[0x10,0x18])||!exact(texture,0x20,[0x10]))throw'bundled PC render scaffold has an incomplete resource/relocation layout';
+ const template={name:'bundled PC render scaffold',desc,part,auxPart,blocks:[data20,data90,data24,meta],mesh,texture,auxMeta};
+ const templateSourceWad='bundled editor STRAT templates';
+ let counts={instances:0,models:0,textures:0,meshes:0,parts:0,collisions:0};
+ const usedCollisionClassNames=new Set();
+ const ascii=(s,n)=>{const b=new Uint8Array(n);for(let i=0;i<Math.min(n,s.length);i++){const c=s.charCodeAt(i);if(c<32||c>126)throw'model name must be plain ASCII';b[i]=c}return b};
+ const srgbToLinear=x=>{x=Math.max(0,Math.min(1,x));return x<=0.04045?x/12.92:Math.pow((x+0.055)/1.055,2.4)};
+ const linearToSrgb=x=>{x=Math.max(0,Math.min(1,x));return x<=0.0031308?12.92*x:1.055*Math.pow(x,1/2.4)-0.055};
+ const bakeTexture=(data,material)=>{
+  let bytes;
+  if(material.texture){bytes=data.textures.get(material.texture);if(!bytes)throw'model texture '+material.texture+' is missing from its bundle';bytes=bytes.slice();
+   if(bytes[2]!==2||bytes[16]!==32)throw'first in-game custom-model support requires a 32-bit truecolour TGA texture; re-export this model with the current Blender add-on';
+  }else{bytes=new Uint8Array(18+4*4*4);bytes[2]=2;bytes[12]=4;bytes[14]=4;bytes[16]=32;bytes[17]=0;for(let p=18;p<bytes.length;p+=4)bytes.set([255,255,255,255],p)}
+  const idEnd=18+bytes[0],w=bytes[12]|(bytes[13]<<8),h=bytes[14]|(bytes[15]<<8),factor=material.baseColor||[1,1,1,1];
+  if(bytes.length<idEnd+w*h*4)throw'model TGA data is truncated';
+  for(let p=idEnd;p<idEnd+w*h*4;p+=4){
+   // TGA stores BGRA; Blender's material base colour is linear RGB.
+   bytes[p]=Math.round(linearToSrgb(srgbToLinear(bytes[p]/255)*factor[2])*255);
+   bytes[p+1]=Math.round(linearToSrgb(srgbToLinear(bytes[p+1]/255)*factor[1])*255);
+   bytes[p+2]=Math.round(linearToSrgb(srgbToLinear(bytes[p+2]/255)*factor[0])*255);
+   bytes[p+3]=Math.round(bytes[p+3]*factor[3]);
+  }
+  return bytes.subarray(0,idEnd+w*h*4);
+ };
+ const makeStrip=indices=>{
+  if(indices.length<3||indices.length%3)throw'mesh index buffer must contain complete triangles';
+  const out=[indices[0],indices[1],indices[2]];
+  for(let t=3;t<indices.length;t+=3){const a=indices[t],b=indices[t+1],c=indices[t+2],last=out[out.length-1],odd=((out.length+2)&1)!==0;
+   out.push(last,odd?b:a,odd?b:a,odd?a:b,c);
+  }
+  return Uint16Array.from(out);
+ };
+ // Embedded 0x178-byte CollMesh topology extracted from the previously
+ // in-game-validated INI_ExtendingPlatform_Suzanne object. Keep this exact
+ // header/KD tree/vertex-record layout: the plain Robot_ExtendingPlatform
+ // variant has different header/tree fields and lost collision in the base-
+ // game 10-00 runtime test. Embedding this tested copy removes all build-time
+ // dependencies on 10-20.LCS and the special Suzanne reference VOL.
+ const retailBoxCollMeshBase64='MAAAAAcAAAAAAAAAAAAAAAAAAAAAAAAAAA5kQKmf8T9oAAAAEQAAAAAAAAAAAAAAONT//wEA///IKwAA//8CAHng//8DAP//iR8AAP//BAC65P//BQD//0obAAD//wYAAwAAABEAAAAAAK+/AAB8vwAAWj+AAAAAAACvvwAAfD8AAFq/gAAAAAAAr78AAHy/AABav9QAAQAAAK8/AAB8PwAAWr/QAQEAAACvPwAAfL8AAFq/0AABAAAArz8AAHw/AABaP9EBAQAAAK8/AAB8vwAAWj/QAAEAAACvvwAAfD8AAFo/0QEBAAAArz8AAHw/AABav4AAAAAAAK8/AAB8PwAAWj+AAAAAAACvvwAAfD8AAFq/wAEKAAAAr78AAHw/AABaP8AACgAAAK+/AAB8vwAAWj/FAQEAAACvPwAAfL8AAFo/xAABAAAAr78AAHy/AABav8ABAQAAAK8/AAB8vwAAWr/AAAEAAAAAAAAAAAAAAAAAAAAAAA==';
+ const findBoxCollisionTemplate=()=>{
+  if(boxCollisionTemplate)return boxCollisionTemplate;
+  const A=base64ToBytes(retailBoxCollMeshBase64),d=new DataView(A.buffer,A.byteOffset,A.byteLength),U=o=>d.getUint32(o,true),F=o=>d.getFloat32(o,true);
+  const coll=0,nodeCount=U(4),nodes=0x30,vertexCount=U(0x24),verts=nodes+nodeCount*8;
+  if(A.length!==0x178||nodeCount!==7||vertexCount!==17||U(nodes+6*8)!==3||U(nodes+6*8+4)!==17)
+   throw'embedded tested Box CollMesh template failed its structural self-check';
+  const bounds=[[Infinity,-Infinity],[Infinity,-Infinity],[Infinity,-Infinity]];
+  for(let i=0;i<vertexCount-1;i++)for(let axis=0;axis<3;axis++){const v=F(verts+i*16+axis*4);bounds[axis][0]=Math.min(bounds[axis][0],v);bounds[axis][1]=Math.max(bounds[axis][1],v)}
+  if(bounds.some(([lo,hi])=>!Number.isFinite(lo)||!Number.isFinite(hi)||hi-lo<1e-5))
+   throw'embedded tested Box CollMesh has invalid source bounds';
+  const flags=Array.from({length:vertexCount},(_,i)=>U(verts+i*16+12));
+  boxCollisionTemplate={sourceWad:'embedded tested INI_ExtendingPlatform_Suzanne box topology',A,className:'INI_ExtendingPlatform_Suzanne',coll,nodes,nodeCount,verts,vertexCount,bounds,flags};
+  return boxCollisionTemplate;
+ };
+ let boxCollisionTemplate=null;
+ const appendNativeModel=(bundle,inst,idx,alias,assetRecord,collisionConfig)=>{
+  const data=parseIninjaModelBundle(bundle),m=data.manifest;
+  if(data.meshes.length!==1||data.materials.length!==1)throw'"'+(m.name||'Custom model')+'": the first in-game build supports exactly one mesh and one material; split or simplify the model in Blender';
+  const mesh=data.meshes[0],material=data.materials[0];
+  if(mesh.material!==0)throw'"'+(m.name||'Custom model')+'": the mesh must use material slot 1';
+  if(material.alphaMode!=='OPAQUE')throw'"'+(m.name||'Custom model')+'": only OPAQUE materials are supported by the first in-game writer';
+  const collisionType=collisionConfig.type;
+  if(!['none','box','sphere','cylinder','mesh'].includes(collisionType))throw'"'+(m.name||'Custom model')+'": supported native collision types are None, Box, Sphere, Cylinder or Mesh';
+  const hasCollision=collisionType!=='none';
+  const pos=inst.position||[0,0,0],rot=inst.rotation||[0,0,0],scale=inst.scale||[1,1,1];
+  if(!Array.isArray(pos)||pos.length!==3||!pos.every(Number.isFinite))throw'custom model instance '+(inst.name||idx)+' has an invalid position';
+  if(!Array.isArray(rot)||rot.length!==3||!rot.every(Number.isFinite))throw'custom model instance '+(inst.name||idx)+' has an invalid rotation';
+  if(!Array.isArray(scale)||scale.length!==3||!scale.every(Number.isFinite)||scale.some(v=>v<=0))throw'custom model instance '+(inst.name||idx)+' has an invalid scale';
+  if(Math.max(...scale)-Math.min(...scale)>1e-5)throw'custom model instance '+(inst.name||idx)+': non-uniform scale is not supported yet; use the same X/Y/Z scale';
+  const uniformScale=(scale[0]+scale[1]+scale[2])/3;
+  const modelName=('INI'+idx.toString(36)+'_'+fnv(new TextEncoder().encode(String(inst.assetId||m.name))).slice(0,7)).slice(0,15);
+  const targetHeadingBits=((((Number(rot[1])||0)%360)+360)%360)*TURN/360;
+  let collisionRef=null;
+  if(hasCollision){
+   // Install/reuse one self-contained generic class per target LCS. Every primitive
+   // placement gets a separate instance, initial-register block, model table
+   // and CollMesh; no target-level donor class or vegetation instance is used.
+   const installed=installGenericCollisionClass(A,B,wadName,resolveSource);A=installed.A;B=installed.B;usedCollisionClassNames.add(installed.className);
+   const added=addGenericCollisionInstance(A,B,wadName,resolveSource,pos,targetHeadingBits,'generic-collision:'+idx,installed.className);A=added.A;B=added.B;
+   collisionRef={classOff:added.classOff,instanceOff:added.instanceOff,initOff:added.initOff};
+   findBoxCollisionTemplate();
+  }else{
+   // Collision-free objects use the bundled, event-free Strat_SetModel class.
+   const source={w:staticTemplateName,i:sourceInstanceIndex},ops={
+    classes:[{from:{w:staticTemplateName,name:staticClassName},variants:[{name:staticClassName,alias}]}],
+    adds:[{id:'custom-model:'+idx,from:source,p:pos,dy:targetHeadingBits-sourceHeadingBits}]
+   };
+   const patched=patchLcs(A,B,ops,wadName,resolveSource,{});A=patched.A;B=patched.B;
+   const clonedWad=siWad(A,B),clonedClass=clonedWad&&clonedWad.classes.find(x=>x.name===alias);
+   if(!clonedClass)throw'could not create the private static STRAT class '+alias;
+   if(clonedClass.ninit!==0||clonedClass.events.some(([,handler])=>handler!==0))
+    throw'private custom-model class '+alias+' inherited unsupported static variables or event handlers';
+  }
+  const bld=Builder(A,B),W=bld.W,copy=(src,n)=>{const p=bld.alloc(n,16);bld.A.set(A.subarray(src,src+n),p);return p};
+  const desc=copy(template.desc,0x70),part=copy(template.part,0x50),data20=copy(template.blocks[0],0x20),data28=copy(template.blocks[1],0x90),data30=copy(template.blocks[2],0x24),meta=copy(template.blocks[3],0x60),meshOff=copy(template.mesh,0x30),texOff=copy(template.texture,0x20);
+  const strip=makeStrip(mesh.indices),vertexCount=mesh.vertexCount,indexCount=strip.length;
+  if(!vertexCount||vertexCount>65535||indexCount<3)throw'custom mesh has invalid vertex/index counts';
+  const vertexOff=bld.alloc(vertexCount*0x20,16),indexOff=bld.alloc(indexCount*2,2),textureData=bakeTexture(data,material),tgaOff=bld.alloc(textureData.length,16);
+  bld.A.set(textureData,tgaOff);
+  const vd=new DataView(bld.A.buffer);for(let v=0;v<vertexCount;v++){
+   const p=vertexOff+v*0x20;
+   // .inimodel coordinates are editor Y-up coordinates. The level viewer's
+   // Mirror Z root applies z=-z for preview, but the game runtime does not.
+   // Test 37 confirmed the native resource must bake that reflection into
+   // vertex positions and normals. The reflection reverses handedness, so keep
+   // the Blender triangle order (makeStrip below receives the original list).
+   vd.setFloat32(p,mesh.positions[v*3]*uniformScale,true);
+   vd.setFloat32(p+4,mesh.positions[v*3+1]*uniformScale,true);
+   vd.setFloat32(p+8,-mesh.positions[v*3+2]*uniformScale,true);
+   vd.setFloat32(p+12,mesh.normals[v*3],true);
+   vd.setFloat32(p+16,mesh.normals[v*3+1],true);
+   vd.setFloat32(p+20,-mesh.normals[v*3+2],true);
+   // The PC renderer's texture V origin is opposite to Blender's UV origin.
+   // Keep U unchanged (the in-game U flip diagnostic did not improve mapping).
+   vd.setFloat32(p+24,mesh.uvs[v*2],true);
+   vd.setFloat32(p+28,1-mesh.uvs[v*2+1],true);
+  }
+  for(let i=0;i<indexCount;i++)vd.setUint16(indexOff+2*i,strip[i],true);
+  // Descriptor: opaque root at +0; no translucent root. Preserve the PC
+  // descriptor's remaining renderer fields from the known one-part template.
+  W(desc,part);bld.addRel(desc);
+  // Preserve the template's auxiliary render-part link at descriptor +0x54.
+  // The complete native descriptor is 0x70 bytes, not the old 0x50-byte prefix.
+  bld.addRel(desc+0x54);bld.A.fill(0,desc+0x20,desc+0x30);bld.A.set(ascii(modelName,16),desc+0x20);
+  // Render part and its four complete support/data blocks.
+  W(part+0x0c,meshOff);W(part+0x10,texOff);W(part+0x20,data20);W(part+0x28,data28);W(part+0x30,data30);W(part+0x38,meta);
+  const partRels=[];for(const o of [part+0x0c,part+0x10,part+0x20,part+0x28,part+0x30,part+0x38])bld.addRelTo(partRels,o);
+  // Full 0x60-byte metadata mirrors the known-good debug model structure.
+  // Both the leading part range and embedded mesh/texture links must agree.
+  W(meta,5);W(meta+4,vertexCount);W(meta+8,indexCount-2);W(meta+12,desc);
+  W(meta+0x20,0);W(meta+0x24,0);W(meta+0x48,meshOff);W(meta+0x4c,texOff);
+  bld.addRel(meta+12);bld.addRel(meta+0x48);bld.addRel(meta+0x4c);
+  // Keep the known-good metadata sidecar at +0x5c; it is shared with the
+  // template graph rather than re-created as an unknown data structure.
+  bld.addRel(meta+0x5c);
+  // PC mesh: one interleaved 32-byte vertex buffer and a 16-bit stitched strip.
+  W(meshOff+4,0x23);W(meshOff+8,0x20);W(meshOff+12,vertexCount);W(meshOff+16,vertexOff);W(meshOff+20,indexCount);W(meshOff+24,indexOff);
+  const meshRels=[];bld.addRelTo(meshRels,meshOff+16);bld.addRelTo(meshRels,meshOff+24);
+  // Native texture resource embeds a pointer to its complete 32-bit TGA.
+  const tw=textureData[12]|(textureData[13]<<8),th=textureData[14]|(textureData[15]<<8);
+  W(texOff+4,tw);W(texOff+8,th);W(texOff+16,tgaOff);W(texOff+20,textureData.length);W(texOff+24,1);const textureRels=[];bld.addRelTo(textureRels,texOff+16);
+  // Register resource starts in the loader's ordered fixup stream.
+  bld.addSpec(1,texOff,textureRels);
+  // The raw vertex byte array is owned by the kind-0x24 mesh through +0x10.
+  // It is NOT a kind-0x23 resource object; registering it would make the loader
+  // overwrite the first vertex with the 0x23 class pointer.
+  bld.addSpec(0x24,meshOff,meshRels);
+  bld.addSpec(0x21,part,partRels);
+  if(collisionRef){
+   const ct=findBoxCollisionTemplate(),sd=new DataView(ct.A.buffer,ct.A.byteOffset,ct.A.byteLength),sf=o=>sd.getFloat32(o,true);
+   const targetMin=[Infinity,Infinity,Infinity],targetMax=[-Infinity,-Infinity,-Infinity];
+   for(let v=0;v<mesh.vertexCount;v++){
+    const point=[mesh.positions[v*3]*uniformScale,mesh.positions[v*3+1]*uniformScale,-mesh.positions[v*3+2]*uniformScale];
+    for(let k=0;k<3;k++){targetMin[k]=Math.min(targetMin[k],point[k]);targetMax[k]=Math.max(targetMax[k],point[k])}
+   }
+   if(targetMin.some((v,k)=>!Number.isFinite(v)||!Number.isFinite(targetMax[k])||targetMax[k]-v<1e-5))throw'custom model '+(m.name||idx)+' has a zero-width X, Y or Z bounds; primitive collision needs non-zero dimensions on all axes';
+   let collOff,nodesOff,vertsOff;
+   if(collisionType==='box'){
+    const live=ct.vertexCount-1,srcMin=ct.bounds.map(x=>x[0]),srcMax=ct.bounds.map(x=>x[1]),srcCenter=srcMin.map((v,k)=>(v+srcMax[k])*0.5),srcHalf=srcMin.map((v,k)=>(srcMax[k]-v)*0.5);
+    const targetCenter=targetMin.map((v,k)=>(v+targetMax[k])*0.5),targetHalf=targetMin.map((v,k)=>(targetMax[k]-v)*0.5);
+    collOff=bld.alloc(0x30,16);nodesOff=bld.alloc(ct.nodeCount*8,4);vertsOff=bld.alloc(ct.vertexCount*16,4);
+    bld.A.set(ct.A.subarray(ct.coll,ct.coll+0x30),collOff);bld.A.set(ct.A.subarray(ct.nodes,ct.nodes+ct.nodeCount*8),nodesOff);bld.A.set(ct.A.subarray(ct.verts,ct.verts+ct.vertexCount*16),vertsOff);
+    const cd=bld.d;bld.W(collOff,nodesOff);bld.W(collOff+0x20,vertsOff);
+    for(let k=0;k<3;k++)cd.setFloat32(collOff+0x0c+k*4,targetCenter[k],true);
+    const radius=Math.hypot(...targetHalf);cd.setFloat32(collOff+0x18,radius*radius,true);cd.setFloat32(collOff+0x1c,radius,true);
+    // Preserve the tested Box topology and terminal sentinel, but derive face
+    // tags from the selected instance's upward/side policy. Transform the
+    // donor records first so classification uses the emitted local geometry.
+    const boxRecords=Array.from({length:ct.vertexCount},(_,v)=>({
+     position:[0,1,2].map(k=>{
+      const sourceValue=sf(ct.verts+v*16+k*4);
+      return v<live?targetCenter[k]+(sourceValue-srcCenter[k])*(targetHalf[k]/srcHalf[k]):sourceValue;
+     }),flags:sd.getUint32(ct.verts+v*16+12,true)
+    }));
+    applyCollisionTagModesToRecords(boxRecords,collisionConfig.topTagMode,collisionConfig.sideTagMode);
+    for(let v=0;v<boxRecords.length;v++){
+     const q=vertsOff+v*16,rec=boxRecords[v];for(let k=0;k<3;k++)cd.setFloat32(q+k*4,rec.position[k],true);cd.setUint32(q+12,rec.flags>>>0,true);
+    }
+    // KD planes use signed 1/8192 coordinates. Carry over the donor's
+    // per-plane safety margin, but reject values that cannot fit in int16.
+    for(let k=0;k<3;k++){
+     const minPlane=sd.getInt16(ct.nodes+(k*2)*8,true),maxPlane=sd.getInt16(ct.nodes+(k*2+1)*8,true);
+     const srcMinQ=Math.round(srcMin[k]*8192),srcMaxQ=Math.round(srcMax[k]*8192),dstMinQ=Math.round(targetMin[k]*8192),dstMaxQ=Math.round(targetMax[k]*8192);
+     const nextMin=dstMinQ+(minPlane-srcMinQ),nextMax=dstMaxQ+(maxPlane-srcMaxQ);
+     if(nextMin< -32768||nextMin>32767||nextMax< -32768||nextMax>32767)throw'custom model '+(m.name||idx)+' box bounds exceed the tested CollMesh KD-plane range on axis '+k+'; reduce model size/scale before building';
+     cd.setInt16(nodesOff+(k*2)*8,nextMin,true);cd.setInt16(nodesOff+(k*2+1)*8,nextMax,true);
+    }
+   }else if(collisionType==='mesh'){
+    const shape=buildMeshCollisionShape(mesh,{scale:uniformScale,topTagMode:collisionConfig.topTagMode,sideTagMode:collisionConfig.sideTagMode});
+    collOff=bld.alloc(0x30,16);nodesOff=bld.alloc(shape.nodeCount*8,8);vertsOff=bld.alloc(shape.records.length*16,16);
+    bld.A.set(ct.A.subarray(ct.coll,ct.coll+0x30),collOff);
+    const cd=bld.d;bld.W(collOff,nodesOff);bld.W(collOff+4,shape.nodeCount);bld.W(collOff+0x20,vertsOff);
+    cd.setUint32(collOff+0x24,shape.records.length,true);cd.setUint32(collOff+0x28,shape.nodeCount,true);
+    for(let k=0;k<3;k++)cd.setFloat32(collOff+0x0c+k*4,shape.centre[k],true);
+    cd.setFloat32(collOff+0x18,shape.radiusSq,true);cd.setFloat32(collOff+0x1c,shape.radius,true);
+    // PC KD bounds: signed int32 / 8192, with the six stock marker words fixed
+    // by Step 103. These markers are essential for generated multi-node trees.
+    const markerWords=[0xffff0001,0x0002ffff,0xffff0003,0x0004ffff,0xffff0005,0x0006ffff];
+    for(let k=0;k<3;k++){
+     const lo=Math.floor(shape.bounds[0][k]*8192)-2,hi=Math.ceil(shape.bounds[1][k]*8192)+2;
+     if(lo< -0x80000000||lo>0x7fffffff||hi< -0x80000000||hi>0x7fffffff)throw'custom model '+(m.name||idx)+' mesh collision root bounds exceed int32 range; reduce model scale';
+     cd.setInt32(nodesOff+k*16,lo,true);cd.setUint32(nodesOff+k*16+4,markerWords[k*2],true);
+     cd.setInt32(nodesOff+(k*2+1)*8,hi,true);cd.setUint32(nodesOff+(k*2+1)*8+4,markerWords[k*2+1],true);
+    }
+    const nodeMap=new Map(shape.nodes.slice(6).map((node,i)=>[node,i+6]));
+    for(let i=6;i<shape.nodeCount;i++){
+     const node=shape.nodes[i],off=nodesOff+i*8;
+     if(node.type==='leaf'){
+      if(node.firstRecord>0xffffff||node.recordCount>255)throw'mesh collision leaf record range cannot be encoded';
+      cd.setUint32(off,3,true);cd.setUint32(off+4,((node.firstRecord<<8)|node.recordCount)>>>0,true);
+     }else{
+      const q=Math.round(node.split*1024);
+      if(q< -0x10000000||q>0x0fffffff)throw'mesh collision KD split exceeds the signed encoded range; reduce model scale';
+      const left=nodeMap.get(node.left),right=nodeMap.get(node.right);
+      if(!Number.isInteger(left)||!Number.isInteger(right))throw'mesh collision KD node references a missing child';
+      cd.setUint32(off,((q<<3)|node.axis)>>>0,true);cd.setUint32(off+4,((left<<16)|right)>>>0,true);
+     }
+    }
+    for(let r=0;r<shape.records.length;r++){const q=vertsOff+r*16,rec=shape.records[r];for(let k=0;k<3;k++)cd.setFloat32(q+k*4,rec.position[k],true);cd.setUint32(q+12,rec.flags>>>0,true)}
+   }else{
+    const shape=buildPrimitiveCollisionShape(collisionType,[targetMin,targetMax],{topTagMode:collisionConfig.topTagMode,sideTagMode:collisionConfig.sideTagMode});
+    collOff=bld.alloc(0x30,16);nodesOff=bld.alloc(ct.nodeCount*8,4);vertsOff=bld.alloc(shape.records.length*16,4);
+    bld.A.set(ct.A.subarray(ct.coll,ct.coll+0x30),collOff);bld.A.set(ct.A.subarray(ct.nodes,ct.nodes+ct.nodeCount*8),nodesOff);
+    const cd=bld.d;bld.W(collOff,nodesOff);bld.W(collOff+0x20,vertsOff);cd.setUint32(collOff+4,ct.nodeCount,true);cd.setUint32(collOff+0x24,shape.records.length,true);
+    for(let k=0;k<3;k++)cd.setFloat32(collOff+0x0c+k*4,shape.centre[k],true);
+    cd.setFloat32(collOff+0x18,shape.radiusSq,true);cd.setFloat32(collOff+0x1c,shape.radius,true);
+    // A single root leaf is sufficient for these deliberately low-record-count
+    // primitives. Keep the six-bound header slots and retail node count/layout.
+    for(let k=0;k<3;k++){
+     const minQ=Math.floor(shape.bounds[0][k]*8192)-2,maxQ=Math.ceil(shape.bounds[1][k]*8192)+2;
+     if(minQ< -32768||minQ>32767||maxQ< -32768||maxQ>32767)throw'custom model '+(m.name||idx)+' '+collisionType+' collision exceeds the tested PC KD-plane range on axis '+k+'; reduce model scale';
+     cd.setInt16(nodesOff+(k*2)*8,minQ,true);cd.setInt16(nodesOff+(k*2+1)*8,maxQ,true);
+    }
+    cd.setUint32(nodesOff+6*8,3,true);cd.setUint32(nodesOff+6*8+4,shape.records.length,true);
+    for(let r=0;r<shape.records.length;r++){const q=vertsOff+r*16,rec=shape.records[r];for(let k=0;k<3;k++)cd.setFloat32(q+k*4,rec.position[k],true);cd.setUint32(q+12,rec.flags>>>0,true)}
+   }
+   bld.addRel(collOff);bld.addRel(collOff+0x20);
+   const impNow=fixups(B);
+   if(!impNow.rel.has(collisionRef.instanceOff+0x28)||!impNow.rel.has(collisionRef.instanceOff+0x2c))throw'generic collision instance lost its class/init-array relocations before write';
+   const tableOff=bld.alloc(8,4);W(tableOff,desc);W(tableOff+4,collOff);bld.addRel(tableOff);bld.addRel(tableOff+4);
+   // r0 is the instance-specific pointer consumed by Strat_SetModelCollide.
+   W(collisionRef.initOff,tableOff);bld.addRel(collisionRef.initOff);
+   counts.collisions++;
+  }
+  const out=bld.finish();A=out.A;B=out.B;
+  if(!collisionRef){
+   // Use the exact script shape that passed the Stage 4B in-game test:
+   // MOV model-table; Strat_SetModel; WAIT(0); JMP back to WAIT(0).
+   const scripted=patchCustomModelStaticScript(A,B,wadName,alias,desc);A=scripted.A;B=scripted.B;
+  }
+  counts.instances++;counts.models++;counts.textures++;counts.meshes++;counts.parts++;
+ };
+ for(let i=0;i<instances.length;i++){
+  const inst=instances[i],asset=assetMap.get(inst.assetId);if(!asset||typeof asset.bundle!=='string')throw'custom model instance '+(inst.name||i)+' refers to missing imported asset '+inst.assetId;
+  const bytes=base64ToBytes(asset.bundle),hash=fnv(bytes),collisionType=effectiveCollisionType(asset,inst);
+  if(!collisionTypes.has(collisionType))throw'custom model '+(asset.name||inst.name||i)+' uses unsupported native collision type '+collisionType+'; choose None, Box, Sphere or Mesh';
+  const collisionConfig={type:collisionType,...effectiveCollisionTags(asset,inst,collisionType)};
+  const alias='INIStatic_'+i.toString(36)+'_'+hash.slice(0,6);
+  appendNativeModel(bytes,inst,i,alias.slice(0,31),asset,collisionConfig);
+ }
+ return{A,B,added:counts,templateSource:templateSourceWad,templateName:template.name,collisionTemplateSource:usedCollisionClassNames.size?'shared bundled generic collision class(es): '+[...usedCollisionClassNames].join(', ')+' + private per-placement CollMeshes':null};
+}
 // ---- read-only dependency report for every class of a strat wad: follows the code the class can actually run (entry + its handlers + called subroutines) and classifies every pointer in it
 const KN={1:'texture',4:'level data',6:'material',7:'material',8:'skeleton/animation',0x20:'draw part',0x21:'mesh part',0x22:'mesh part',0x23:'vertex buffer',0x24:'mesh',0x113:'sound bank',0x115:'sound'};
 const classReportCache=new WeakMap();
@@ -652,7 +1405,7 @@ const EC_KN={1:'texture',4:'level data',6:'material',7:'material',8:'skeleton/an
 function resResolver(S,T){const si=ResIndex(S),ti=ResIndex(T);return{hook:(type,off)=>{const to=ti.map.get(si.key(off));if(to==null)throw'it needs '+si.describe(off)+', which this level does not have';if((type===0x113||type===0x115)&&T.res.get(to)!==type)throw'internal: the sound equivalent found for '+si.describe(off)+' has a different resource type';return to},si,ti}}
 // ---- class transplant: copy whole code blocks (with every class that lives in them), their class records and event segments into another wad
 // Layout facts verified on all level wads: a class's code lies entirely inside the block its record names (+0x0c); classes are stored in ascending code order;
-// each class's events / per-class list (+0x1c) are segments of flat tables that grow by appending at the end of class order.
+// event ranges can overlap as inherited suffixes, while per-class lists (+0x1c) are flat-table segments. Same-LCS clones retain each class's exact event range.
 // The code region, the event table + class table, and the per-class list + instance table are each copied to the end of the wad (extended there) and every pointer into the old copies is retargeted.
 function groupOf(S,names){const cls=S.w.classes,by=new Map();cls.forEach((c,i)=>{const b=S.U(c.off+0xc);if(!by.has(b))by.set(b,[]);by.get(b).push(i)});const sel=new Set();
  for(const n of names){const i=cls.findIndex(c=>c.name===n);if(i<0)throw'class '+n+' not found in the source level';for(const j of by.get(S.U(cls[i].off+0xc)))sel.add(j)}
@@ -676,8 +1429,28 @@ function transplantOnce(A0,B0,S,names,hooks,opt){opt=opt||{};const bld=Builder(A
  const newWords=blocks.reduce((s,b)=>s+b.n,0),codeNew=bld.alloc((ncode+newWords)*4,16);
  // source event segments of the group (all group classes share one segment [ev0, next larger ev0))
  const sEv0=[...new Set(S.w.classes.map(c=>S.U(c.off+0x24)))].sort((a,b)=>a-b),sEvEnd=S.cl0,segs=[];
- const inGrp=v=>blocks.some(b=>v>=b.p&&v<b.p+4*b.n);   // only events whose handler lives in the copied blocks belong to the group
- const segStart=new Map();for(const g of [...new Set(grp.map(c=>S.U(c.off+0x24)))].sort((a,b)=>a-b)){const e=sEv0.find(v=>v>g)??sEvEnd;segStart.set(g,segs.length);for(let p=g;p<e;p+=8)if(inGrp(S.U(p+4)))segs.push([S.U(p),S.U(p+4),g])}
+ const inGrp=v=>blocks.some(b=>v>=b.p&&v<b.p+4*b.n);
+ // When the class is cloned within the same LCS, event handlers outside its
+ // own code block are still valid dependencies: the original code is moved
+ // with the rest of that LCS and the relocation pass below retargets pointers
+ // into it. Keep the complete event segment instead of silently dropping
+ // those external handler slots. Cross-LCS transplants retain the conservative
+ // in-group-only behaviour because an external source code pointer is unsafe.
+ const segStart=new Map(),classSegStart=new Map(),classSegLength=new Map();
+ if(opt.preserveExternalEvents){
+  // Same-LCS classes can inherit a suffix of another class's event list. The
+  // exact range for each class is [events_start, class+0x28), not merely up to
+  // the next class's events_start. Copy each distinct range in full so a
+  // private clone retains every event slot, including handlers implemented
+  // by other original classes in this same code region.
+  const byRange=new Map();
+  for(const c of grp){const start=S.U(c.off+0x24),end=S.U(c.off+0x28),key=start+':'+end;
+   let at=byRange.get(key);if(at==null){at=segs.length;byRange.set(key,at);for(let p=start;p<end;p+=8)segs.push([S.U(p),S.U(p+4),start])}
+   classSegStart.set(c.off,at);classSegLength.set(c.off,(end-start)/8);
+  }
+ }else{
+  for(const g of [...new Set(grp.map(c=>S.U(c.off+0x24)))].sort((a,b)=>a-b)){const e=sEv0.find(v=>v>g)??sEvEnd;segStart.set(g,segs.length);for(let p=g;p<e;p+=8)if(inGrp(S.U(p+4)))segs.push([S.U(p),S.U(p+4),g])}
+ }
  const evOldBytes=cl0-evLo,evNewBytes=segs.length*8,statBytes=(Math.max(0,...grp.map(c=>S.U(c.off+0x10)>>>16))*4+15)&~15,ecNew=bld.alloc(evOldBytes+evNewBytes+statBytes+(ncl+grp.length)*0x2c,16),clsNew=ecNew+evOldBytes+evNewBytes+statBytes,statNew=ecNew+evOldBytes+evNewBytes;
  // source per-class list segments
  const sBind=S.bindStart,sIns=S.ins0,bvals=[...new Set(S.w.classes.map(c=>S.U(c.off+0x1c)))].sort((a,b)=>a-b);
@@ -699,7 +1472,7 @@ function transplantOnce(A0,B0,S,names,hooks,opt){opt=opt||{};const bld=Builder(A
    if(newRec.has(v))n=newRec.get(v);else{const k=classify(S,v).k;if(k==='code'){n=mapCode(v);if(n==null)throw'code in block @'+b.p.toString(16)+' points outside the copied blocks'}else n=pmap.get(v);if(n==null)throw'unresolved pointer in block @'+b.p.toString(16)}
    bld.W(q,n);bld.addRel(q)}}
  // 4) new events (key unchanged, handler -> new code)
- const evStart=ecNew+evOldBytes;segs.forEach(([key,hd],i)=>{const o=evStart+i*8;W(o,key);const n=hd?mapCode(hd):0;if(hd&&n==null)throw'event handler outside the copied blocks';W(o+4,n||0);if(n)bld.addRel(o+4)});
+ const evStart=ecNew+evOldBytes;segs.forEach(([key,hd],i)=>{const o=evStart+i*8;W(o,key);const mapped=hd?mapCode(hd):0,n=mapped==null&&hd&&opt.preserveExternalEvents?hd:mapped;if(hd&&n==null)throw'event handler outside the copied blocks';W(o+4,n||0);if(n)bld.addRel(o+4)});
  // 5) new class records
  const poolVal=tcls.length?tcls[0].pool:evLo;
  const sPoolLo=Math.min(...S.w.classes.map(c=>S.U(c.off+0x20))),sEvLo=Math.min(S.cl0,...sEv0),poolOk=p=>p>=sPoolLo&&p<sEvLo&&sEvLo-sPoolLo<=0x10000,poolNew=grp.some(c=>poolOk(S.U(c.off+0x20)))?bld.alloc(sEvLo-sPoolLo,4):0;
@@ -708,7 +1481,10 @@ function transplantOnce(A0,B0,S,names,hooks,opt){opt=opt||{};const bld=Builder(A
   W(o,h);bld.addRel(o);const nm=(opt.aliases&&opt.aliases[c.name])||c.name,ns=bld.alloc(nm.length+2,4)+1;for(let q=0;q<nm.length;q++)bld.A[ns+q]=nm.charCodeAt(q);W(o+4,ns);bld.addRel(o+4);
   W(o+8,mapCode(c.entry));bld.addRel(o+8);W(o+0xc,bmap.get(S.U(c.off+0xc)));bld.addRel(o+0xc);
   const sb=S.U(c.off+0x1c);W(o+0x1c,sb>=sIns?insNew:bindNew+bindOldBytes+(sb-gMin));bld.addRel(o+0x1c);
-  const sp=S.U(c.off+0x20),sg=S.U(c.off+0x24);W(o+0x20,poolNew&&poolOk(sp)?poolNew+(sp-sPoolLo):poolVal);bld.addRel(o+0x20);W(o+0x24,evStart+8*(segStart.has(sg)?segStart.get(sg):segs.length));bld.addRel(o+0x24);W(o+0x28,statNew);bld.addRel(o+0x28)});
+  const sp=S.U(c.off+0x20),sg=S.U(c.off+0x24);W(o+0x20,poolNew&&poolOk(sp)?poolNew+(sp-sPoolLo):poolVal);bld.addRel(o+0x20);
+  const evAt=opt.preserveExternalEvents?classSegStart.get(c.off):segStart.get(sg),evLen=opt.preserveExternalEvents?classSegLength.get(c.off):null;
+  W(o+0x24,evStart+8*(evAt==null?segs.length:evAt));bld.addRel(o+0x24);
+  W(o+0x28,opt.preserveExternalEvents?evStart+8*((evAt==null?segs.length:evAt)+(evLen||0)):statNew);bld.addRel(o+0x28)});
  for(let i=0;i<bindNewBytes;i+=4){if(S.w.rel.has(gMin+i))throw'per-class list contains pointers';W(bindNew+bindOldBytes+i,S.U(gMin+i))}
  // 6) retarget every pointer into the old copies of the moved regions
  const R=[[code,codeEnd,codeNew-code],[evLo,cl0,ecNew-evLo],[cl0,clEnd,clsNew-cl0],[bindStart,ins,bindNew-bindStart],[ins,insEnd,insNew-ins],[lnk,lnkEnd,lnkNew-lnk]];
@@ -724,26 +1500,89 @@ function transplantOnce(A0,B0,S,names,hooks,opt){opt=opt||{};const bld=Builder(A
 // {ntex @p-4, *texTable @p, nmesh @p+4, *meshTable @p+8} and creates the D3D textures / vertex+index buffers only for what these tables list
 // (all kind-1 textures; all kind-0x24 meshes plus the kind-0x23 vertex-buffer object). Verified equal to the real counts in every untouched level.
 // A copied texture/mesh that is not listed is never created: the part draws with the previously bound stream (another model's parts), no texture, or crashes.
-// Appends whatever is missing (keeps the table address-sorted when it was), bumps the counts. No-op when the directory is already complete.
-function healResDir(A0,B0){
- const imp=fixups(B0),n0=A0.length,d=new DataView(A0.buffer,A0.byteOffset,n0),U=o=>(o>=0&&o+4<=n0)?d.getUint32(o,true):0;
- const tex=imp[0x80000001]||[],mesh=(imp[0x80000024]||[]).concat(imp[0x80000023]||[]);
- const none={A:A0,B:B0,added:{tex:0,mesh:0},dir:null};if(!tex.length||!mesh.length)return none;
- const ts=new Set(tex),ms=new Set(mesh),cands=[];
- for(const p of imp.rel){if(p<8||p+12>n0||!imp.rel.has(p+8))continue;const t=U(p),n=U(p-4),mt=U(p+8),m=U(p+4);
-  if(!(n>=1&&n<=tex.length&&tex.length-n<=512&&m>=1&&m<=mesh.length&&mesh.length-m<=512&&t>0&&t+4*n<=n0&&mt>0&&mt+4*m<=n0))continue;
-  let ok=true;const seen=new Set();for(let i=0;i<n&&ok;i++){const v=U(t+4*i);if(!ts.has(v)||seen.has(v))ok=false;seen.add(v)}
-  seen.clear();for(let i=0;i<m&&ok;i++){const v=U(mt+4*i);if(!ms.has(v)||seen.has(v))ok=false;seen.add(v)}
-  if(ok)cands.push(p)}
- if(cands.length!==1){if(cands.length>1)throw'resource directory is ambiguous';return none}
- const dir=cands[0],bld=Builder(A0,B0);
- const fix=(cl,pl,all)=>{const n=bld.U(cl),old=bld.U(pl),cur=[];for(let i=0;i<n;i++)cur.push(bld.U(old+4*i));
-  const have=new Set(cur),add=[...new Set(all)].filter(v=>!have.has(v));if(!add.length)return 0;
-  const asc=cur.every((v,i)=>!i||v>=cur[i-1]),lst=asc?cur.concat(add).sort((a,b)=>a-b):cur.concat(add),np=bld.alloc(4*lst.length,16);
-  lst.forEach((v,i)=>{bld.W(np+4*i,v);bld.addRel(np+4*i)});bld.W(pl,np);bld.W(cl,lst.length);return add.length};
- const at=fix(dir-4,dir,tex),am=fix(dir+4,dir+8,mesh);
- if(!at&&!am)return{...none,dir};
- const r=bld.finish();return{A:r.A,B:r.B,added:{tex:at,mesh:am},dir}}
+// Appends only newly imported resources (keeps the table address-sorted when it was), removes stale entries, and bumps the counts. Existing unlisted imports remain untouched.
+function healResDir(A0,B0,baselineB=B0){
+ const n0=A0.length,d0=new DataView(A0.buffer,A0.byteOffset,A0.byteLength),U0=o=>(o>=0&&o+4<=n0)?d0.getUint32(o,true):0;
+ let B=B0,imp=fixups(B),invalidVertexResources=[];
+ const rawVertexTargets=new Set();
+ for(const m of imp[0x80000024]||[])if(imp.rel.has(m+16))rawVertexTargets.add(U0(m+16));
+ // Kind 0x23 is a structured PC vertex-buffer resource, not a raw vertex
+ // array. A previous custom-model build incorrectly registered the mesh's
+ // +0x10 byte-array pointer as kind 0x23. The loader then treats the first
+ // float as the object's vtable and also puts that bogus address in the level
+ // resource directory. Remove only malformed 0x23 import records; keep native
+ // kind-0x23 objects (class pointer +0x10/+0x18 data links) untouched.
+ const vb23=imp[0x80000023]||[];
+ for(const o of vb23){
+  const inRange=o>=0&&o+0x20<=n0;
+  const nativeHeader=inRange&&U0(o)===0x0054bbd8&&imp.rel.has(o+0x10)&&imp.rel.has(o+0x18);
+  if(!nativeHeader||rawVertexTargets.has(o))invalidVertexResources.push(o);
+ }
+ if(invalidVertexResources.length){
+  const bad=new Set(invalidVertexResources),src=new DataView(B.buffer,B.byteOffset,B.byteLength),words=[];
+  for(let i=0;i+4<=B.length;){
+   const x=src.getUint32(i,true);
+   if(x>=0x80000000){
+    if(i+8>B.length)throw'malformed resource-import record in LCS fixup stream';
+    const loc=src.getUint32(i+4,true);
+    if(x!==0x80000023||!bad.has(loc))words.push(x,loc);
+    i+=8;
+   }else{words.push(x);i+=4}
+  }
+  const out=new Uint8Array(words.length*4),od=new DataView(out.buffer);words.forEach((v,i)=>od.setUint32(i*4,v,true));B=out;imp=fixups(B);
+ }
+ const tex=imp[0x80000001]||[],mesh=(imp[0x80000024]||[]).concat(imp[0x80000023]||[]),texSet=new Set(tex),meshSet=new Set(mesh);
+ // A level may intentionally import alternate-model resources which are not
+ // members of its runtime D3D resource directory (10-00.LCS has such a pair
+ // for RanxInLiquidCapsule's Hang_Rax variants). Preserve that native policy:
+ // append only resources introduced since the unmodified level's fixup stream,
+ // while still pruning stale directory entries and malformed legacy imports.
+ const baseImp=fixups(baselineB||B0),baseTex=new Set(baseImp[0x80000001]||[]),baseMesh=new Set([...(baseImp[0x80000024]||[]),...(baseImp[0x80000023]||[])]);
+ const addedTex=tex.filter(v=>!baseTex.has(v)),addedMesh=mesh.filter(v=>!baseMesh.has(v));
+ const cands=[];
+ for(const p of imp.rel){
+  if(p<8||p+12>n0||!imp.rel.has(p+8))continue;
+  const t=U0(p),nt=U0(p-4),mt=U0(p+8),nm=U0(p+4);
+  if(!(nt>=1&&nt<=tex.length+512&&nm>=1&&nm<=mesh.length+512&&t>0&&t%4===0&&t+4*nt<=n0&&mt>0&&mt%4===0&&mt+4*nm<=n0))continue;
+  const measure=(ptr,count,valid)=>{
+   let good=0,dupes=0;const seen=new Set();
+   for(let i=0;i<count;i++){const v=U0(ptr+4*i);if(valid.has(v)){if(seen.has(v))dupes++;else good++;seen.add(v)}}
+   return{good,dupes,ratio:good/Math.max(1,count)};
+  };
+  const a=measure(t,nt,texSet),b=measure(mt,nm,meshSet);
+  // Permit a small number of stale entries from older builds, but require a
+  // strong match on both arrays so unrelated pointer tables are not selected.
+  if(a.ratio<0.90||b.ratio<0.90||a.dupes>2||b.dupes>2)continue;
+  cands.push({p,t,nt,mt,nm,score:a.ratio+b.ratio+(a.good/Math.max(1,tex.length))+(b.good/Math.max(1,mesh.length))});
+ }
+ if(!cands.length)return{A:A0,B,added:{tex:0,mesh:0},removed:{tex:0,mesh:0,invalidVertexResources:invalidVertexResources.length},dir:null};
+ cands.sort((a,b)=>b.score-a.score);
+ if(cands.length>1&&Math.abs(cands[0].score-cands[1].score)<0.01)throw'resource directory is ambiguous';
+ const dir=cands[0].p,bld=Builder(A0,B);let totalAdded={tex:0,mesh:0},totalRemoved={tex:0,mesh:0};
+ const fix=(countOff,ptrOff,all,additions)=>{
+  const n=bld.U(countOff),old=bld.U(ptrOff),valid=new Set(all),cur=[];
+  for(let i=0;i<n;i++)cur.push(bld.U(old+4*i));
+  const seen=new Set(),kept=[];let removed=0;
+  for(const v of cur){if(!valid.has(v)||seen.has(v)){removed++;continue}seen.add(v);kept.push(v)}
+  const missing=additions.filter(v=>valid.has(v)&&!seen.has(v));
+  const sorted=cur.every((v,i)=>!i||v>=cur[i-1]);
+  const final=sorted?kept.concat(missing).sort((a,b)=>a-b):kept.concat(missing);
+  const changed=final.length!==cur.length||final.some((v,i)=>v!==cur[i]);
+  if(!changed)return{added:0,removed:0};
+  if(final.length<=n){
+   final.forEach((v,i)=>{const slot=old+4*i;bld.W(slot,v);bld.addRel(slot)});
+   bld.W(countOff,final.length);
+  }else{
+   const np=bld.alloc(final.length*4,16);
+   final.forEach((v,i)=>{bld.W(np+4*i,v);bld.addRel(np+4*i)});
+   bld.W(ptrOff,np);bld.addRel(ptrOff);bld.W(countOff,final.length);
+  }
+  return{added:missing.length,removed};
+ };
+ const t=fix(dir-4,dir,tex,addedTex),m=fix(dir+4,dir+8,mesh,addedMesh);totalAdded={tex:t.added,mesh:m.added};totalRemoved={tex:t.removed,mesh:m.removed,invalidVertexResources:invalidVertexResources.length};
+ if(!totalAdded.tex&&!totalAdded.mesh&&!totalRemoved.tex&&!totalRemoved.mesh&&!invalidVertexResources.length)return{A:A0,B:B0,added:totalAdded,removed:totalRemoved,dir};
+ const r=bld.finish();return{A:r.A,B:r.B,added:totalAdded,removed:totalRemoved,dir};
+}
 // self-test of the data copier on any set of strat wads [{name,A,B}]: for every class present (with data objects) in 2+ wads, copy its closure from one wad into another and compare
 function copierSelfTest(wads,progress){const W={};for(const x of wads){try{const S=SrcCtx(x.A,x.B);W[x.name]={A:x.A,B:x.B,S,rep:classReports(x.A,x.B)}}catch(e){}}
  const rootsOf=(x,cn)=>{const r=x.rep[cn];if(!r)return[];const seen=new Set(),out=[];for(const[k,v]of r.ptrs){if(seen.has(v))continue;seen.add(v);if(classify(x.S,v).k==='data')out.push(v)}return out};
@@ -765,6 +1604,401 @@ function copierSelfTest(wads,progress){const W={};for(const x of wads){try{const
 function prefabCheck(A,B,i){const imp=fixups(B),h=(imp[0x8000010e]||[])[0];if(h==null)return'no strat data';const d=new DataView(A.buffer,A.byteOffset,A.length),U=o=>d.getUint32(o,true),so=U(h+0x28)+i*INS,cp=U(so+0x28),ni=d.getUint16(cp+0x18,true),ip=U(so+0x2c);
  for(let r=0;r<ni;r++)if(imp.rel.has(ip+4*r)&&siPrint(siCstr(A,U(ip+4*r)))===null)return'register '+r+' points into level data';
  const pn=U(so+0x30);if(pn){let n=pn;for(let g=0;g<64&&U(n)>0;g++)n=U(n);for(let g=0;g<64&&n>0;g++){for(let w=8;w<0x40;w+=4)if(imp.rel.has(n+w))return'path node points into level data';n=U(n+4)}}return null}
+// Generate a primitive PC CollMesh stream from model-local runtime bounds.
+// Classify a corrected triangle normal for the empirically tested material
+// tags. Upward surfaces retain the historical positive-Y rule. Side surfaces
+// are faces whose normal is within 0.25 of horizontal (roughly 14.5 degrees from
+// a vertical wall); this gives a narrow, predictable band for wall-running tests.
+function collisionTagForNormal(normal,topTagMode='slidey',sideTagMode='slidey'){
+ const length=Math.hypot(normal[0],normal[1],normal[2]);if(length<1e-12)return 0x0001;
+ const ny=normal[1]/length;
+ if(sideTagMode==='walkable'&&Math.abs(ny)<=0.25)return 0x000A;
+ if(topTagMode==='standable'&&ny>1e-10)return 0x000A;
+ return 0x0001;
+}
+// Rewrite only the high-16 material tag on triangle-ending records. This lets
+// the known-good retail Box topology receive the same per-instance surface
+// policy as generated primitive and indexed-mesh CollMeshes.
+function applyCollisionTagModesToRecords(records,topTagMode='slidey',sideTagMode='slidey'){
+ if(!Array.isArray(records))throw'collision tag application requires a record array';
+ if(!['standable','slidey'].includes(topTagMode))throw'upward tag mode must be standable or slidey';
+ if(!['walkable','slidey'].includes(sideTagMode))throw'side tag mode must be walkable or slidey';
+ const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+ for(let i=2;i<records.length;i++){
+  const rec=records[i],flags=rec.flags>>>0;if(!(flags&0x40))continue;
+  let a=records[i-2].position,b=records[i-1].position,c=rec.position;
+  if(flags&0x100)[a,b]=[b,a];
+  const normal=cross(sub(b,a),sub(c,a)),tag=collisionTagForNormal(normal,topTagMode,sideTagMode);
+  rec.flags=((flags&0xffff)|(tag<<16))>>>0;
+ }
+ return records;
+}
+// The returned record stream uses the retail PC 16-byte vertex records and a
+// single KD leaf. Cylinder preserves and warps the complete, runtime-proven
+// Sphere six-strip stream into a closed cylinder with flat polar-fan caps.
+// Triangle winding is corrected per emitted record using the PC reverse bit.
+function buildPrimitiveCollisionShape(type,bounds,{sphereSegments=12,sphereBands=6,cylinderSides=12,topTagMode=null,sideTagMode='slidey'}={}){
+ const kind=String(type||'').toLowerCase();
+ if(!['box','sphere','cylinder'].includes(kind))throw'unsupported primitive collision shape '+kind;
+ const upwardMode=topTagMode==null?((kind==='box'||kind==='cylinder')?'standable':'slidey'):topTagMode;
+ if(!['standable','slidey'].includes(upwardMode))throw'primitive upward tag mode must be standable or slidey';
+ if(!['walkable','slidey'].includes(sideTagMode))throw'primitive side tag mode must be walkable or slidey';
+ if(!Array.isArray(bounds)||bounds.length!==2||bounds.some(v=>!Array.isArray(v)||v.length!==3||!v.every(Number.isFinite)))throw'primitive collision bounds must be [[minX,minY,minZ],[maxX,maxY,maxZ]]';
+ const sourceMin=bounds[0].slice(),sourceMax=bounds[1].slice();
+ if(sourceMin.some((v,k)=>sourceMax[k]-v<1e-5))throw'primitive collision requires non-zero X, Y and Z model bounds';
+ const centre=sourceMin.map((v,k)=>(v+sourceMax[k])*0.5),half=sourceMin.map((v,k)=>(sourceMax[k]-v)*0.5);
+ let shapeMin=sourceMin.slice(),shapeMax=sourceMax.slice(),radius=0;
+ if(kind==='sphere'){
+  radius=Math.hypot(...half);if(!Number.isFinite(radius)||radius<=1e-5)throw'sphere collision radius is invalid';
+  shapeMin=centre.map(v=>v-radius);shapeMax=centre.map(v=>v+radius);
+ }else if(kind==='cylinder'){
+  radius=Math.hypot(half[0],half[2]);if(!Number.isFinite(radius)||radius<=1e-5)throw'cylinder collision radius is invalid';
+  shapeMin=[centre[0]-radius,sourceMin[1],centre[2]-radius];shapeMax=[centre[0]+radius,sourceMax[1],centre[2]+radius];
+ }
+ const strips=[];
+ if(kind==='box'){
+  for(let axis=0;axis<3;axis++)for(const sign of [-1,1]){
+   const u=(axis+1)%3,v=(axis+2)%3,face=[];
+   for(const [su,sv] of [[-1,-1],[1,-1],[-1,1],[1,1]]){const q=centre.slice();q[axis]=centre[axis]+sign*half[axis];q[u]=centre[u]+su*half[u];q[v]=centre[v]+sv*half[v];face.push(q)}
+   strips.push(face);
+  }
+ }else if(kind==='sphere'){
+  if(!Number.isInteger(sphereSegments)||sphereSegments<8||sphereSegments>24||!Number.isInteger(sphereBands)||sphereBands<4||sphereBands>12)throw'sphere tessellation is outside the supported range';
+  for(let band=0;band<sphereBands;band++){
+   const a0=Math.PI*band/sphereBands,a1=Math.PI*(band+1)/sphereBands,points=[];
+   for(let j=0;j<=sphereSegments;j++){
+    const t=2*Math.PI*j/sphereSegments;
+    for(const a of [a0,a1])points.push([centre[0]+radius*Math.sin(a)*Math.cos(t),centre[1]+radius*Math.cos(a),centre[2]+radius*Math.sin(a)*Math.sin(t)]);
+   }
+   strips.push(points);
+  }
+ }else{
+  if(!Number.isInteger(cylinderSides)||cylinderSides<8||cylinderSides>24)throw'cylinder tessellation is outside the supported range';
+  if(!Number.isInteger(sphereBands)||sphereBands<4||sphereBands>12)throw'cylinder sphere-band count is outside the supported range';
+  // Closed Cylinder built by warping the COMPLETE, runtime-proven Sphere
+  // stream. We preserve the Sphere's six-band strip order, record count,
+  // degenerate separators, triangle-closing flags and one-leaf layout.
+  // Band 0 is flattened into a top disk, the middle bands become a vertical
+  // constant-radius wall, and the final band becomes a bottom disk. Keeping
+  // both polar fans means the result is a closed surface rather than Step 91's
+  // open-bottom mixed Sphere/Box strip stream.
+  const polarAngle=Math.PI/sphereBands;
+  const sideStart=polarAngle,sideEnd=Math.PI-polarAngle;
+  const sideSpan=sideEnd-sideStart;
+  for(let band=0;band<sphereBands;band++){
+   const a0=Math.PI*band/sphereBands,a1=Math.PI*(band+1)/sphereBands,points=[];
+   for(let j=0;j<=cylinderSides;j++){
+    const t=2*Math.PI*j/cylinderSides;
+    for(const a of [a0,a1]){
+     let radial,y;
+     if(band===0){
+      // The original north-pole fan becomes a flat top disk, from centre to R.
+      radial=radius*Math.sin(a)/Math.sin(polarAngle);y=sourceMax[1];
+     }else if(band===sphereBands-1){
+      // The original south-pole fan becomes a flat bottom disk.
+      radial=radius*Math.sin(a)/Math.sin(polarAngle);y=sourceMin[1];
+     }else{
+      // Every middle latitude is mapped linearly over the cylinder height.
+      radial=radius;y=sourceMax[1]-(a-sideStart)/sideSpan*(sourceMax[1]-sourceMin[1]);
+     }
+     points.push([centre[0]+radial*Math.cos(t),y,centre[2]+radial*Math.sin(t)]);
+    }
+   }
+   strips.push(points);
+  }
+ }
+ const stream=[];
+ for(let si=0;si<strips.length;si++){
+  const strip=strips[si];if(!Array.isArray(strip)||strip.length<3)continue;
+  if(!stream.length)stream.push(...strip.map(v=>v.slice()));
+  else{
+   const appendAt=stream.length;
+   stream.push(stream[stream.length-1].slice(),strip[0].slice(),strip[0].slice(),...strip.slice(1).map(v=>v.slice()));
+  }
+ }
+ if(stream.length<3)throw'primitive collision generated an empty triangle stream';
+ const records=[],trianglePositions=[],triangleMaterials=[],eps=1e-10;
+ const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+ for(let i=0;i<stream.length;i++){
+  const point=stream[i];let flags=0x80;
+  if(i>=2){
+   const a=stream[i-2],b=stream[i-1],c=point,n=cross(sub(b,a),sub(c,a)),area=Math.hypot(...n);
+   if(area>eps){
+    let outward;
+    if(kind==='cylinder'&&Math.max(a[1],b[1],c[1])-Math.min(a[1],b[1],c[1])<1e-8){const y=(a[1]+b[1]+c[1])/3;outward=[0,y>=centre[1]?1:-1,0]}
+    else outward=[(a[0]+b[0]+c[0])/3-centre[0],(a[1]+b[1]+c[1])/3-centre[1],(a[2]+b[2]+c[2])/3-centre[2]];
+    const reverse=dot(n,outward)<0,tri=reverse?[b,a,c]:[a,b,c];
+    // The same per-instance surface-tag rules are shared by Box, Sphere and
+    // Cylinder. Correct the normal before classifying the face so the material
+    // policy follows the emitted triangle winding rather than source strip order.
+    const correctedNormal=reverse?n.map(v=>-v):n;
+    const materialTag=collisionTagForNormal(correctedNormal,upwardMode,sideTagMode);
+    flags=0x80|0x40|0x10|(materialTag<<16)|(reverse?0x100:0);
+    for(const v of tri)trianglePositions.push(v[0],v[1],v[2]);triangleMaterials.push(materialTag);
+   }
+  }
+  records.push({position:point.slice(),flags});
+ }
+ records.push({position:[0,0,0],flags:0});
+ if(records.length>255)throw kind+' collision generated '+records.length+' records; the single-leaf PC CollMesh limit is 255';
+ const triangleCount=triangleMaterials.length;if(!triangleCount)throw kind+' collision generated no non-degenerate triangles';
+ const radiusHeader=kind==='cylinder'?Math.hypot(radius,half[1]):kind==='sphere'?radius:Math.hypot(...half);
+ return{type:kind,centre,radius:radiusHeader,radiusSq:radiusHeader*radiusHeader,bounds:[shapeMin,shapeMax],sourceBounds:[sourceMin,sourceMax],records,trianglePositions:Float32Array.from(trianglePositions),triangleMaterials:Uint16Array.from(triangleMaterials),triangleCount,recordCount:records.length,leafRecordCount:records.length,stripCount:strips.length,topTagMode:upwardMode,sideTagMode};
+}
+
+// Build a native PC CollMesh from the exact indexed triangles of an imported
+// .inimodel mesh. Large meshes are partitioned into retail PC KD leaves; every
+// leaf owns an independent, terminated triangle strip (<=255 records). The
+// six root-bound marker words match the verified retail/Step 103 pattern.
+function buildMeshCollisionShape(mesh,{scale=1,topTagMode='slidey',sideTagMode='slidey',maxTrianglesPerLeaf=48}={}){
+ if(!mesh||!mesh.positions||!mesh.normals||!mesh.indices)throw'mesh collision requires positions, normals and triangle indices';
+ if(!Number.isFinite(scale)||scale<=0)throw'mesh collision scale must be finite and positive';
+ if(!['standable','slidey'].includes(topTagMode))throw'mesh top-tag mode must be standable or slidey';
+ if(!['walkable','slidey'].includes(sideTagMode))throw'mesh side-tag mode must be walkable or slidey';
+ if(!Number.isInteger(maxTrianglesPerLeaf)||maxTrianglesPerLeaf<1||maxTrianglesPerLeaf>50)throw'mesh KD leaf triangle limit must be between 1 and 50';
+ const vertexCount=mesh.positions.length/3,indexCount=mesh.indices.length;
+ if(!Number.isInteger(vertexCount)||vertexCount<3||mesh.normals.length!==mesh.positions.length)throw'mesh collision has inconsistent position/normal buffers';
+ if(indexCount<3||indexCount%3)throw'mesh collision index buffer must contain complete triangles';
+ const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity],points=new Array(vertexCount);
+ for(let v=0;v<vertexCount;v++){
+  const p=[mesh.positions[v*3]*scale,mesh.positions[v*3+1]*scale,-mesh.positions[v*3+2]*scale];
+  if(!p.every(Number.isFinite))throw'mesh collision contains a non-finite vertex at '+v;
+  points[v]=p;for(let k=0;k<3;k++){min[k]=Math.min(min[k],p[k]);max[k]=Math.max(max[k],p[k]);}
+ }
+ if(min.some((v,k)=>!Number.isFinite(v)||max[k]-v<1e-5))throw'mesh collision requires non-zero X, Y and Z bounds';
+ const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],norm=a=>Math.hypot(...a);
+ const triangles=[],materialCounts={};let upwardFacingTriangles=0,sideFacingTriangles=0;
+ for(let t=0;t<indexCount/3;t++){
+  const ids=[mesh.indices[t*3],mesh.indices[t*3+1],mesh.indices[t*3+2]];
+  if(ids.some(i=>!Number.isInteger(i)||i<0||i>=vertexCount))throw'mesh collision triangle '+t+' contains an out-of-range index';
+  const triPoints=ids.map(i=>points[i]),triNormals=ids.map(i=>[mesh.normals[i*3],mesh.normals[i*3+1],-mesh.normals[i*3+2]]);
+  const n=cross(sub(triPoints[1],triPoints[0]),sub(triPoints[2],triPoints[0]));
+  if(norm(n)<1e-10)throw'mesh collision contains a degenerate triangle at index '+t;
+  const avgNormal=[0,1,2].map(k=>(triNormals[0][k]+triNormals[1][k]+triNormals[2][k])/3);
+  const reverse=norm(avgNormal)>1e-10&&dot(n,avgNormal)<0;
+  const orientedNormal=reverse?n.map(v=>-v):n;
+  const normalLength=norm(orientedNormal),normalY=normalLength?orientedNormal[1]/normalLength:0;
+  const upward=orientedNormal[1]>1e-10,sideFacing=Math.abs(normalY)<=0.25;
+  if(upward)upwardFacingTriangles++;if(sideFacing)sideFacingTriangles++;
+  const materialTag=collisionTagForNormal(orientedNormal,topTagMode,sideTagMode);
+  materialCounts[materialTag]=(materialCounts[materialTag]||0)+1;
+  triangles.push({id:t,points:triPoints,normals:triNormals,reverse,materialTag,centroid:[0,1,2].map(k=>(triPoints[0][k]+triPoints[1][k]+triPoints[2][k])/3)});
+ }
+ // Deterministic spatial KD partition based on triangle centroids. Split planes
+ // are quantized to 1/1024 game units and each leaf remains below the PC 255
+ // record ceiling. Keep the Step 102 split policy for compatibility.
+ const leafRefs=[];
+ function partition(items,leaves){
+  if(leaves===1){const leaf={type:'leaf',triangles:items,firstRecord:0,recordCount:0};leafRefs.push(leaf);return leaf;}
+  const leftLeaves=Math.floor(leaves/2),rightLeaves=leaves-leftLeaves;
+  const minCut=Math.max(leftLeaves,items.length-maxTrianglesPerLeaf*rightLeaves),maxCut=Math.min(items.length-rightLeaves,maxTrianglesPerLeaf*leftLeaves);
+  const targetCut=Math.max(minCut,Math.min(maxCut,Math.round(items.length*leftLeaves/leaves)));
+  let best=null;
+  for(let axis=0;axis<3;axis++){
+   const sorted=items.slice().sort((a,b)=>a.centroid[axis]-b.centroid[axis]||a.id-b.id);
+   for(let cut=minCut;cut<=maxCut;cut++){
+    const leftMax=sorted[cut-1].centroid[axis],rightMin=sorted[cut].centroid[axis];
+    if(rightMin-leftMax<1e-10)continue;
+    const split=Math.round(((leftMax+rightMin)*0.5)*1024)/1024,eps=0.0001;
+    if(split<leftMax-eps||split>rightMin+eps)continue;
+    const vals=items.map(t=>t.centroid[axis]),spread=Math.max(1e-9,Math.max(...vals)-Math.min(...vals)),gap=rightMin-leftMax;
+    const score=Math.abs(cut-targetCut)-Math.min(gap/spread,0.1)*0.01;
+    if(!best||score<best.score)best={axis,sorted,cut,split,score};
+   }
+  }
+  if(!best){
+   const spreads=[0,1,2].map(axis=>{const vals=items.map(t=>t.centroid[axis]);return Math.max(...vals)-Math.min(...vals);});
+   const axis=[0,1,2].sort((a,b)=>spreads[b]-spreads[a])[0],sorted=items.slice().sort((a,b)=>a.centroid[axis]-b.centroid[axis]||a.id-b.id),cut=targetCut;
+   const leftMax=sorted[cut-1].centroid[axis],rightMin=sorted[cut].centroid[axis];
+   if(rightMin-leftMax<1e-10)throw'mesh KD partition cannot separate coincident triangle centroids; reduce or retopologize the mesh';
+   const split=Math.round(((leftMax+rightMin)*0.5)*1024)/1024;
+   if(split<leftMax-0.0001||split>rightMin+0.0001)throw'mesh KD split plane cannot be represented at 1/1024-unit precision; reduce model scale';
+   best={axis,sorted,cut,split,score:0};
+  }
+  const left=best.sorted.slice(0,best.cut),right=best.sorted.slice(best.cut),node={type:'internal',axis:best.axis,split:best.split,left:null,right:null};
+  if(!left.length||!right.length||left.length>maxTrianglesPerLeaf*leftLeaves||right.length>maxTrianglesPerLeaf*rightLeaves)throw'mesh KD partition produced an invalid leaf allocation';
+  node.left=partition(left,leftLeaves);node.right=partition(right,rightLeaves);return node;
+ }
+ const leafCount=Math.ceil(triangles.length/maxTrianglesPerLeaf),root=partition(triangles,leafCount);
+ const nodes=Array.from({length:6},()=>({type:'bound'})),nodeIndex=new Map();
+ function flatten(node){const index=nodes.length;nodes.push(node);nodeIndex.set(node,index);if(node.type==='internal'){flatten(node.left);flatten(node.right);}return index;}
+ if(flatten(root)!==6)throw'mesh KD root index is not 6';
+ const orderedLeaves=[];const visit=node=>{if(node.type==='leaf')orderedLeaves.push(node);else{visit(node.left);visit(node.right);}};visit(root);
+ if(orderedLeaves.length!==leafCount)throw'mesh KD leaf count does not match its partition';
+ const records=[];
+ for(const leaf of orderedLeaves){
+  let previousLast=null;
+  for(let i=0;i<leaf.triangles.length;i++){
+   const tri=leaf.triangles[i],ps=tri.points,flags=(0x80|0x40|0x10|(tri.materialTag<<16)|(tri.reverse?0x100:0))>>>0;
+   const face=[{position:ps[0].slice(),flags:0x80},{position:ps[1].slice(),flags:0x80},{position:ps[2].slice(),flags}];
+   if(i===0)records.push(...face);
+   else records.push({position:previousLast.position.slice(),flags:0x80},face[0],{position:face[0].position.slice(),flags:0x80},face[1],face[2]);
+   previousLast=face[2];
+  }
+  if(!previousLast)throw'mesh KD leaf unexpectedly has no triangles';
+  records.push({position:previousLast.position.slice(),flags:0});
+  leaf.recordCount=5*leaf.triangles.length-1;
+ }
+ // Recompute exact leaf starts by replaying the known per-leaf stream lengths.
+ let recordCursor=0;for(const leaf of orderedLeaves){leaf.firstRecord=recordCursor;leaf.recordCount=5*leaf.triangles.length-1;recordCursor+=leaf.recordCount;}
+ if(recordCursor!==records.length)throw'mesh KD record stream accounting failed';
+ if(records.some((r,i)=>i>=0&&!r.position.every(Number.isFinite)))throw'mesh KD record stream contains a non-finite position';
+ if(nodes.length>4096)throw'mesh KD tree exceeds the tested 4096-node limit';
+ for(const leaf of orderedLeaves)if(leaf.recordCount>255||leaf.firstRecord>0xffffff)throw'mesh KD leaf record range cannot be encoded';
+ const centre=min.map((v,k)=>(v+max[k])*0.5);let radius=0;
+ for(const p of points)radius=Math.max(radius,norm(sub(p,centre)));
+ // Verify that the quantized split at every internal node still separates the
+ // centroid groups stored under its children. This catches unsafe KD encodes.
+ function verify(node){if(node.type==='leaf')return node.triangles;const left=verify(node.left),right=verify(node.right);for(const t of left)if(t.centroid[node.axis]>node.split+0.0001)throw'mesh KD left child contains a triangle centroid above its split';for(const t of right)if(t.centroid[node.axis]<node.split-0.0001)throw'mesh KD right child contains a triangle centroid below its split';return left.concat(right);}
+ if(verify(root).length!==triangles.length)throw'mesh KD partition lost triangle records';
+ return{type:'mesh',bounds:[min,max],centre,radius,radiusSq:radius*radius,records,nodes,nodeCount:nodes.length,leafCount,triangleCount:triangles.length,recordCount:records.length,triangles,materialCounts,topTagMode,sideTagMode,upwardFacingTriangles,sideFacingTriangles};
+}
+
+// Read a native object CollMesh referenced by a Strat_SetModelCollide model table.
+// This is inspection-only: it decodes the existing LCS data and never changes it.
+// Header: +00 relocated KD-node pointer, +04 node count; +0c..+1c sphere;
+// +20 relocated 16-byte vertex-record pointer, +24 record count.
+// Vertex flags: 0x80 valid, 0x40 emits a triangle from the preceding two valid
+// records, 0x100 reverses the first two indices, high 16 bits are material ID.
+function parseCollisionMesh(A,B,collOffset){
+ const fail=error=>({valid:false,error,offset:collOffset});
+ if(!(A instanceof Uint8Array)||!Number.isInteger(collOffset)||collOffset<0||collOffset+0x30>A.length)return fail('CollMesh header is outside the LCS data');
+ const imp=fixups(B),d=new DataView(A.buffer,A.byteOffset,A.byteLength),U=o=>d.getUint32(o,true),F=o=>d.getFloat32(o,true);
+ const nodePtr=U(collOffset),nodeCount=U(collOffset+4),vertexPtr=U(collOffset+0x20),vertexCount=U(collOffset+0x24);
+ if(!nodePtr||nodeCount<1||nodeCount>4096||nodePtr+nodeCount*8>A.length)return fail('KD-node pointer/count is invalid');
+ if(!vertexPtr||vertexCount<3||vertexCount>100000||vertexPtr+vertexCount*16>A.length)return fail('vertex-record pointer/count is invalid');
+ const relocations={nodePointer:imp.rel.has(collOffset),vertexPointer:imp.rel.has(collOffset+0x20)};
+ const nodes=[];for(let i=0;i<nodeCount;i++){const o=nodePtr+i*8;nodes.push({index:i,word0:U(o),word1:U(o+4),hex0:'0x'+U(o).toString(16).padStart(8,'0'),hex1:'0x'+U(o+4).toString(16).padStart(8,'0')})}
+ // PC retail KD layout reconstructed from the unmodified base-game 10.vol.
+ // Entries 0..5 are signed 1/8192 AABB bounds (Xmin, Xmax, Ymin, Ymax, Zmin, Zmax);
+ // node 6 is the root. Internal word0 stores axis in bits 0..1 and the split
+ // coordinate in the signed upper bits. Retail samples have bit 2 clear, so
+ // (s32(word0) >> 3) / 1024 is the same 1/8192 coordinate quantisation.
+ // Internal word1 stores child A in high16 and child B in low16. In PC 10.vol
+ // geometry, A is the below/negative side and B is the above/positive side.
+ // A leaf word1 is PC-specific: (firstVertexRecord << 8) | recordCount.
+ // This differs from the PS2 PSM format documented by i-ninja-macos-master,
+ // where leaves point to DMA descriptors and the root is node 0.
+ const s32=v=>v>=0x80000000?v-0x100000000:v;
+ const kdBounds=nodeCount>=6?[[0,1,2].map(k=>s32(nodes[k*2].word0)/8192),[0,1,2].map(k=>s32(nodes[k*2+1].word0)/8192)]:null;
+ const kdNodes=[],kdWarnings=[];let kdInternalCount=0,kdLeafCount=0,kdSingleChildCount=0,kdTwoChildCount=0;
+ const kdAxisCounts={x:0,y:0,z:0};const parents=new Uint16Array(nodeCount),childMap=new Map(),kdByIndex=new Map();
+ const leafCoverage=new Uint8Array(vertexCount);let leafRangeInvalid=0;
+ const headerWord28=U(collOffset+0x28);
+ // Retail PC 10.vol sets this to nodeCount for all 95 scanned CollMeshes, but the
+ // supplied custom Suzanne test mesh sets it to zero. Keep it raw until its PC
+ // runtime meaning is established; the PS2 'leaf base' interpretation is not assumed.
+ const leafBase=headerWord28;
+ if(nodeCount<7)kdWarnings.push('KD array is shorter than the six-bound header plus root node');
+ for(let i=6;i<nodeCount;i++){
+  const raw=nodes[i].word0,axis=raw&3,entry={index:i,rawWord0:raw,rawWord1:nodes[i].word1};
+  if(axis===3){
+   const payload=nodes[i].word1,firstRecord=payload>>>8,recordCount=payload&0xff;
+   entry.type='leaf';entry.leafPayload=payload;entry.firstRecord=firstRecord;entry.recordCount=recordCount;entry.lastRecord=recordCount?firstRecord+recordCount-1:firstRecord-1;
+   if(recordCount===0||firstRecord+recordCount>vertexCount){kdWarnings.push('leaf node '+i+' record range '+firstRecord+'+'+recordCount+' exceeds '+vertexCount+' records');leafRangeInvalid++;}
+   else for(let r=firstRecord;r<firstRecord+recordCount;r++)leafCoverage[r]++;
+   kdLeafCount++;
+  }else{
+   const axisName=axis===0?'x':axis===1?'y':'z',splitWord=(s32(raw)>>3),split=splitWord/1024;
+   const childA=(nodes[i].word1>>>16)&0xffff,childB=nodes[i].word1&0xffff,children=[];
+   entry.type='internal';entry.axis=axis;entry.axisName=axisName;entry.split=split;entry.splitWord=splitWord;
+   entry.childA=childA===0xffff?null:childA;entry.childB=childB===0xffff?null:childB;
+   entry.childASide='below';entry.childBSide='above';
+   if(entry.childA!==null)children.push(entry.childA);if(entry.childB!==null)children.push(entry.childB);
+   entry.children=children;kdInternalCount++;kdAxisCounts[axisName]++;
+   if(children.length===1)kdSingleChildCount++;else if(children.length===2)kdTwoChildCount++;else kdWarnings.push('internal node '+i+' has no children');
+   for(const child of children){if(child<6||child>=nodeCount)kdWarnings.push('node '+i+' points outside the KD tree to '+child);else parents[child]++;}
+   if(kdBounds&& (split<kdBounds[0][axis]-0.002||split>kdBounds[1][axis]+0.002))kdWarnings.push('split plane at node '+i+' is outside the root '+axisName+' bounds');
+  }
+  kdNodes.push(entry);kdByIndex.set(i,entry);childMap.set(i,entry.children||[]);
+ }
+ let uncoveredRecords=0,overlappedRecords=0,coveredRecords=0;
+ for(const c of leafCoverage){if(c===0)uncoveredRecords++;else if(c>1)overlappedRecords++;else coveredRecords++;}
+ const leafRangesValid=leafRangeInvalid===0&&uncoveredRecords===0&&overlappedRecords===0;
+ if(!leafRangesValid)kdWarnings.push('leaf record ranges do not partition the vertex array exactly once (covered '+coveredRecords+'/'+vertexCount+', gaps '+uncoveredRecords+', overlaps '+overlappedRecords+')');
+ const kdDepths={},kdVisitState=new Uint8Array(nodeCount);let kdMaxDepth=0,kdReachableCount=0,regionSplitCount=0,regionSplitOutOfBounds=0;
+ const visitKd=(index,depth,region,path)=>{
+  if(index<6||index>=nodeCount){kdWarnings.push('tree traversal reached invalid node '+index);return;}
+  if(kdVisitState[index]===1){kdWarnings.push('cycle detected at KD node '+index);return;}
+  if(kdVisitState[index]===2){kdWarnings.push('KD node '+index+' is referenced by more than one parent');return;}
+  kdVisitState[index]=1;kdDepths[index]=depth;kdReachableCount++;if(depth>kdMaxDepth)kdMaxDepth=depth;
+  const entry=kdByIndex.get(index);if(!entry){kdWarnings.push('missing decoded node '+index);kdVisitState[index]=2;return;}
+  entry.region={min:region.min.slice(),max:region.max.slice()};entry.path=path;
+  if(entry.type==='internal'){
+   const axis=entry.axis,split=entry.split,lo=region.min[axis],hi=region.max[axis];regionSplitCount++;
+   if(split<lo-0.002||split>hi+0.002){regionSplitOutOfBounds++;kdWarnings.push('split plane at node '+index+' lies outside its inherited subtree region');}
+   const cut=Math.max(lo,Math.min(hi,split));
+   if(entry.childA!==null){const below={min:region.min.slice(),max:region.max.slice()};below.max[axis]=Math.min(below.max[axis],cut);visitKd(entry.childA,depth+1,below,path.concat([{axis,split,side:'below',parent:index}]));}
+   if(entry.childB!==null){const above={min:region.min.slice(),max:region.max.slice()};above.min[axis]=Math.max(above.min[axis],cut);visitKd(entry.childB,depth+1,above,path.concat([{axis,split,side:'above',parent:index}]));}
+  }
+  kdVisitState[index]=2;
+ };
+ if(nodeCount>=7&&kdBounds)visitKd(6,0,{min:kdBounds[0].slice(),max:kdBounds[1].slice()},[]);
+ if(nodeCount>=7&&parents[6]!==0)kdWarnings.push('root node 6 is referenced as a child');
+ for(let i=7;i<nodeCount;i++)if(kdVisitState[i]!==2)kdWarnings.push('KD node '+i+' is unreachable from root 6');
+ for(let i=7;i<nodeCount;i++)if(parents[i]!==1)kdWarnings.push('KD node '+i+' has '+parents[i]+' parents (expected 1)');
+ const leafRangeSummary={valid:leafRangesValid,coveredRecords,uncoveredRecords,overlappedRecords,invalidLeaves:leafRangeInvalid,encoding:'firstRecord = word1 >>> 8; recordCount = word1 & 0xff'};
+ const kdTree={valid:kdWarnings.length===0,root:nodeCount>=7?6:null,bounds:kdBounds,nodes:kdNodes,internalCount:kdInternalCount,leafCount:kdLeafCount,axisCounts:kdAxisCounts,singleChildCount:kdSingleChildCount,twoChildCount:kdTwoChildCount,maxDepth:kdMaxDepth,reachableCount:kdReachableCount,warnings:kdWarnings,depths:kdDepths,leafRanges:leafRangeSummary,leafBase,headerWord28,leafBaseMatchesNodeCount:headerWord28===nodeCount,headerWord28Meaning:'unknown on PC; retained raw',childSideConvention:'high16=below; low16=above',regionSplitCount,regionSplitOutOfBounds,leafPayloadMeaning:'firstVertexRecord<<8 | recordCount'};
+ const recordLeafIndex=new Int32Array(vertexCount);recordLeafIndex.fill(-1);
+ for(const n of kdNodes)if(n.type==='leaf'&&n.recordCount>0&&n.firstRecord+n.recordCount<=vertexCount)for(let r=n.firstRecord;r<n.firstRecord+n.recordCount;r++)if(recordLeafIndex[r]===-1)recordLeafIndex[r]=n.index;
+ const records=new Array(vertexCount),triPos=[],triMaterials=[],triFlags=[],triLeafIndices=[];let prev1=null,prev2=null,validRecords=0;
+ const bounds=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
+ for(let i=0;i<vertexCount;i++){
+  const o=vertexPtr+i*16,pos=[F(o),F(o+4),F(o+8)],flags=U(o+12),valid=!!(flags&0x80);
+  if(!pos.every(Number.isFinite)||pos.some(v=>Math.abs(v)>1e6))return fail('vertex record '+i+' contains invalid coordinates');
+  const r={index:i,position:pos,flags,flagsHex:'0x'+flags.toString(16).padStart(8,'0'),valid,triangleEnd:!!(flags&0x40),reverse:!!(flags&0x100),material:flags>>>16,leafIndex:recordLeafIndex[i]>=0?recordLeafIndex[i]:null};records[i]=r;
+  if(!valid){prev1=prev2=null;continue}
+  validRecords++;for(let k=0;k<3;k++){bounds[k]=Math.min(bounds[k],pos[k]);bounds[k+3]=Math.max(bounds[k+3],pos[k])}
+  if((flags&0x40)&&prev1&&prev2){
+   const tri=flags&0x100?[prev1,prev2,r]:[prev2,prev1,r];
+   for(const v of tri)triPos.push(...v.position);
+   triMaterials.push(flags>>>16);triFlags.push(flags);triLeafIndices.push(r.leafIndex);
+  }
+  prev2=prev1;prev1=r;
+ }
+ const centre=[F(collOffset+0x0c),F(collOffset+0x10),F(collOffset+0x14)],radiusSq=F(collOffset+0x18),radius=F(collOffset+0x1c);
+ if(!centre.every(Number.isFinite)||!Number.isFinite(radiusSq)||!Number.isFinite(radius))return fail('bounding-sphere header contains invalid values');
+ const materialCounts={};for(const m of triMaterials)materialCounts[m]=(materialCounts[m]||0)+1;
+ const vertexBounds=validRecords?[bounds.slice(0,3),bounds.slice(3)]:null;
+ let kdBoundsError=null;if(kdBounds&&vertexBounds){kdBoundsError=0;for(let k=0;k<3;k++){kdBoundsError=Math.max(kdBoundsError,Math.abs(kdBounds[0][k]-vertexBounds[0][k]),Math.abs(kdBounds[1][k]-vertexBounds[1][k]))}}
+ const sideEvidence={high16Below:0,low16Above:0,contradictions:0,mixed:0},leafTriangleCounts={};
+ for(const n of kdNodes)if(n.type==='leaf')leafTriangleCounts[n.index]=0;
+ for(let ti=0;ti<triLeafIndices.length;ti++){const li=triLeafIndices[ti];if(li!=null&&li in leafTriangleCounts)leafTriangleCounts[li]++;}
+ for(const leaf of kdNodes){if(leaf.type!=='leaf'||!leaf.recordCount||leaf.firstRecord+leaf.recordCount>vertexCount)continue;
+  const mn=[Infinity,Infinity,Infinity],mx=[-Infinity,-Infinity,-Infinity];
+  for(let r=leaf.firstRecord;r<leaf.lastRecord;r++)for(let a=0;a<3;a++){const v=records[r].position[a];mn[a]=Math.min(mn[a],v);mx[a]=Math.max(mx[a],v)}
+  leaf.positionBounds={min:mn,max:mx};leaf.triangleCount=leafTriangleCounts[leaf.index]||0;
+  for(const step of leaf.path||[]){const lo=mn[step.axis],hi=mx[step.axis];let evidence=false,contradiction=false;
+   if(step.side==='below'){evidence=hi<step.split-0.05;contradiction=lo>step.split+0.05;if(evidence)sideEvidence.high16Below++;}
+   else{evidence=lo>step.split+0.05;contradiction=hi<step.split-0.05;if(evidence)sideEvidence.low16Above++;}
+   if(contradiction)sideEvidence.contradictions++;if(!evidence&&!contradiction)sideEvidence.mixed++;
+  }
+ }
+ kdTree.sideEvidence=sideEvidence;
+ const triangleCentroidEvidence={high16Below:0,high16Above:0,high16Near:0,low16Above:0,low16Below:0,low16Near:0,observations:0};
+ for(let ti=0;ti<triLeafIndices.length;ti++){
+  const li=triLeafIndices[ti],leaf=li==null?null:kdByIndex.get(li);if(!leaf||leaf.type!=='leaf')continue;
+  for(const step of leaf.path||[]){const axis=step.axis,c=(triPos[ti*9+axis]+triPos[ti*9+3+axis]+triPos[ti*9+6+axis])/3,eps=0.0001;triangleCentroidEvidence.observations++;
+   if(step.side==='below'){if(c<step.split-eps)triangleCentroidEvidence.high16Below++;else if(c>step.split+eps)triangleCentroidEvidence.high16Above++;else triangleCentroidEvidence.high16Near++;}
+   else{if(c>step.split+eps)triangleCentroidEvidence.low16Above++;else if(c<step.split-eps)triangleCentroidEvidence.low16Below++;else triangleCentroidEvidence.low16Near++;}
+  }
+ }
+ kdTree.triangleCentroidEvidence=triangleCentroidEvidence;
+ const leafStreams={valid:true,leafCount:0,startsValid:0,endsWithZeroTerminator:0,extraInvalidRecords:0};
+ for(const leaf of kdNodes){if(leaf.type!=='leaf'||!leaf.recordCount||leaf.firstRecord+leaf.recordCount>vertexCount)continue;leafStreams.leafCount++;
+  if(records[leaf.firstRecord]?.valid)leafStreams.startsValid++;
+  const last=records[leaf.lastRecord];if(last&&last.flags===0)leafStreams.endsWithZeroTerminator++;
+  for(let ri=leaf.firstRecord;ri<leaf.lastRecord;ri++)if(!records[ri].valid)leafStreams.extraInvalidRecords++;
+ }
+ leafStreams.valid=leafStreams.leafCount===kdLeafCount&&leafStreams.startsValid===kdLeafCount&&leafStreams.endsWithZeroTerminator===kdLeafCount&&leafStreams.extraInvalidRecords===0;
+ if(!leafStreams.valid)kdWarnings.push('leaf streams do not each start with valid records and end with one zero-flag terminator');
+ kdTree.leafStreams=leafStreams;kdTree.valid=kdWarnings.length===0;kdTree.warnings=kdWarnings;
+ return{valid:true,offset:collOffset,nodePtr,nodeCount,leafBase,headerWord28,vertexPtr,vertexCount,validRecords,nodes,kdTree,kdBounds,kdBoundsError,records,
+  positions:Float32Array.from(triPos),materials:Uint16Array.from(triMaterials),triangleFlags:Uint32Array.from(triFlags),triangleLeaves:Uint16Array.from(triLeafIndices, v=>v==null?0xffff:v),triangleCount:triMaterials.length,
+  materialCounts,centre,radiusSq,radius,bounds:vertexBounds,
+  relocations,headerWords:Array.from({length:12},(_,i)=>U(collOffset+i*4))};
+}
+
 // object meshes (type 0x24: 32-byte vertices pos/normal/uv + one stitched triangle strip). A mesh is split into its parts (0x21/0x22): every part owns a slice of the
 // strip (index range) and its own material. Part table (verified on every mesh of 10.vol and 20.vol): the 4th (count,pointer) pair of the part points at
 // [5, vertexCount, indexCount, ptr, 0,0,0,0, verticesRemainingAfter, indicesRemainingAfter]; parts tile the vertex and index buffers exactly (index slice = indexCount+2 incl. stitch).
@@ -809,12 +2043,32 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
  const modelGroups=[],groupById=new Map(),memberships=new Map();
  const readModelName=desc=>{if(!Number.isInteger(desc)||desc<0||desc+0x30>A.length)return'';const raw=A.subarray(desc+0x20,desc+0x30);let end=raw.indexOf(0);if(end<0)end=raw.length;const bytes=raw.subarray(0,end);if(bytes.length<2||[...bytes].some(v=>v<32||v>126))return'';return String.fromCharCode(...bytes).trim()};
  const followPartChain=start=>{const chain=[],seen=new Set();let cur=start;while(pset.has(cur)&&!seen.has(cur)){seen.add(cur);chain.push(cur);const link=cur+0x44;if(!imp.rel.has(link))break;const prev=rd(link);if(!pset.has(prev)||prev===cur)break;cur=prev}return chain};
- const makeGroup=(id,desc,name,kind,source)=>{let g=groupById.get(id);if(!g){g={id,descriptor:desc,name,displayName:name,kind,source,classes:[],natives:[],roots:[],rootDetails:[],refs:0,parts:[],evidence:[],_partSet:new Set(),_classes:new Set(),_natives:new Set()};groupById.set(id,g);modelGroups.push(g)}return g};
+ const makeGroup=(id,desc,name,kind,source)=>{let g=groupById.get(id);if(!g){g={id,descriptor:desc,name,displayName:name,kind,source,classes:[],entryClasses:[],handlerClasses:[],entryRefs:[],classTableRefs:[],natives:[],roots:[],rootDetails:[],refs:0,parts:[],evidence:[],_partSet:new Set(),_classes:new Set(),_entryClasses:new Set(),_handlerClasses:new Set(),_natives:new Set()};groupById.set(id,g);modelGroups.push(g)}return g};
  const addPartEvidence=(g,poff,ev)=>{if(!pset.has(poff))return;g._partSet.add(poff);g.evidence.push({p:poff,...ev})};
  const addRoots=(g,desc,offsets,role)=>{for(const off of offsets){const rp=desc+off;if(!imp.rel.has(rp))continue;const root=rd(rp);if(!pset.has(root))continue;g.roots.push(root);g.rootDetails.push({offset:off,part:root,role});for(const p of followPartChain(root))addPartEvidence(g,p,{via:'part-prev-chain',root,rootOffset:off,role})}};
  // Native references are authoritative about class ownership.  Descriptor
  // identity (address + role), not display name, is the group key.
- const modelRefs=(()=>{try{return analyseStrats(A,B,{} )?.modelRefs||[]}catch(e){console.warn('model-name analysis failed',e);return[]}})();
+ const scriptInfo=Object.create(null);let scriptAnalysis=null;try{scriptAnalysis=analyseStrats(A,B,scriptInfo)}catch(e){console.warn('model-name analysis failed',e)}const modelRefs=scriptAnalysis?.modelRefs||[];const resolvedModelRefs=[];
+ // Literal retail classes carry their model table address in the script. The
+ // portable generic collision class instead calls Strat_SetModelCollide(r0):
+ // each STRAT instance supplies its own table through initial register 0.
+ // Resolve that indirection per instance so the inspector sees the real
+ // descriptor and CollMesh without pretending the class owns one global table.
+ const collisionWad=siWad(A,B);
+ for(const ref of modelRefs){
+  if(Number.isInteger(ref.table)){resolvedModelRefs.push(ref);continue}
+  if(ref.native!=='Strat_SetModelCollide'||!Number.isInteger(ref.register)||!collisionWad)continue;
+  const classIndex=collisionWad.classes.findIndex(c=>c.name===ref.cls);if(classIndex<0)continue;
+  for(let instanceIndex=0;instanceIndex<collisionWad.instances.length;instanceIndex++){
+   const instance=collisionWad.instances[instanceIndex];if(instance.cls!==classIndex||!instance.init)continue;
+   const initSlot=instance.init+ref.register*4;
+   if(initSlot<0||initSlot+4>A.length||!imp.rel.has(initSlot))continue;
+   const table=rd(initSlot);if(!table||table+8>A.length||!imp.rel.has(table)||!imp.rel.has(table+4))continue;
+   const desc=rd(table),collMesh=rd(table+4);if(!desc||desc+0x30>A.length||!collMesh||collMesh+0x30>A.length)continue;
+   resolvedModelRefs.push({...ref,table,register:ref.register,tableRegister:ref.register,instanceIndex,instanceOffset:instance.off,initOffset:instance.init,collMesh,registration:'instance-init-register'});
+  }
+ }
+ const entryInitialSpawnsByClass=Object.create(null),entrySpawnDetailsByClass=Object.create(null);for(const key of scriptAnalysis?.keys||[]){const ci=scriptInfo[key];if(!ci?.name)continue;if(Array.isArray(ci.entryInitialSpawns)&&ci.entryInitialSpawns.length){const rows=entryInitialSpawnsByClass[ci.name]||(entryInitialSpawnsByClass[ci.name]=[]);for(const child of ci.entryInitialSpawns)if(child&&!rows.includes(child))rows.push(child)}if(Array.isArray(ci.entrySpawnDetails)&&ci.entrySpawnDetails.length){const rows=entrySpawnDetailsByClass[ci.name]||(entrySpawnDetailsByClass[ci.name]=[]);for(const child of ci.entrySpawnDetails)if(child?.name&&!rows.some(x=>x.name===child.name&&x.call===child.call))rows.push(child)}}
  // Indirect class->model links: a class can load a model-table entry address (mov rN,&A[table]) without passing it straight
  // to a Strat_SetModel* native (e.g. variants swapped in later, Guardian_Yang's arrelo, SavePoint's 2nd Base, BeachFern's leaves, BossDoor_Kyza's 2nd door).
  // Scan each class's own code range [entry, next class entry) for such immediates (init code follows the entry). Entries loaded by more than 3 classes come from shared helper code and are ignored.
@@ -825,8 +2079,8 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
   for(const [tb,cl] of seen){if(cl.size>3)continue;for(const c of cl){if(direct.has(c+'|'+tb))continue;modelRefs.push({cls:c,native:'ClassTableRef',table:tb,call:0,arg:0});added++}}
   modelRefs.indirectAdded=added}}catch(e){console.warn('class table-ref scan failed',e)}
  const scriptDescriptorRoles=new Set();
- const addCls=(g,ref)=>{if(ref.native==='ClassTableRef')(g._prob=g._prob||new Set()).add(ref.cls);else g._classes.add(ref.cls)};
- for(const ref of modelRefs){const table=ref.table;if(!Number.isInteger(table)||table<0||table+4>A.length||!imp.rel.has(table))continue;const desc=rd(table);if(!desc||desc<0||desc+0x30>A.length)continue;const name=readModelName(desc);if(!name)continue;const native=ref.native;
+ const addCls=(g,ref)=>{if(ref.native==='ClassTableRef'){(g._prob=g._prob||new Set()).add(ref.cls);if(ref.cls&&Number.isInteger(ref.table))g.classTableRefs.push({cls:ref.cls,table:ref.table})}else{g._classes.add(ref.cls);if(ref.scope==='entry'){g._entryClasses.add(ref.cls);g.entryRefs.push({cls:ref.cls,native:ref.native,call:ref.call,arg:ref.arg,table:ref.table,register:ref.register,conditions:ref.conditions||[]})}else if(ref.scope==='handler')g._handlerClasses.add(ref.cls)}};
+ for(const ref of resolvedModelRefs){const table=ref.table;if(!Number.isInteger(table)||table<0||table+4>A.length||!imp.rel.has(table))continue;const desc=rd(table);if(!desc||desc<0||desc+0x30>A.length)continue;const name=readModelName(desc);if(!name)continue;const native=ref.native;
   if(native==='Strat_SetModel'||native==='Strat_SetModelEx'||native==='ClassTableRef'){
    const g=makeGroup('script:model:'+desc.toString(16),desc,name,'model','script');addCls(g,ref);g._natives.add(native);g.refs++;scriptDescriptorRoles.add(desc);
    // The descriptor has two independently stored root slots. Retain each
@@ -837,7 +2091,7 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
    // The model-table entry is {+0 model, +4 CollMesh}; the collision mesh is table+4 (non-renderable data), never desc+4. So both lists are one visible model.
    const g=makeGroup('script:model:'+desc.toString(16),desc,name,'model','script');addCls(g,ref);g._natives.add(native);g.refs++;scriptDescriptorRoles.add(desc);
    addRoots(g,desc,[0],'opaque-list');addRoots(g,desc,[4],'translucent-list');
-   if(imp.rel.has(table+4)){const cm=rd(table+4);if(cm)g.collMesh=cm}
+   if(imp.rel.has(table+4)){const cm=rd(table+4);if(cm){const meta={collMesh:cm,table,register:Number.isInteger(ref.tableRegister)?ref.tableRegister:null,instanceIndex:Number.isInteger(ref.instanceIndex)?ref.instanceIndex:null,instanceOffset:Number.isInteger(ref.instanceOffset)?ref.instanceOffset:null,initOffset:Number.isInteger(ref.initOffset)?ref.initOffset:null,registration:ref.registration||'script-literal-table'};g.collMeshRefs=g.collMeshRefs||[];if(!g.collMeshRefs.some(x=>x.collMesh===cm&&x.instanceIndex===meta.instanceIndex))g.collMeshRefs.push(meta);if(g.collMesh==null)g.collMesh=cm;else if(g.collMesh!==cm){g.collMeshAmbiguous=true;delete g.collMesh}}}
   }else if(native==='Strat_SetAttachModel'){
    const g=makeGroup('script:attachment:'+desc.toString(16),desc,name,'attachment','script');addCls(g,ref);g._natives.add(native);g.refs++;scriptDescriptorRoles.add(desc);
    addRoots(g,desc,[0],'opaque-list');addRoots(g,desc,[4],'translucent-list');
@@ -868,8 +2122,8 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
    for(const g of gs){for(const p of ps2)if(!g._partSet.has(p))addPartEvidence(g,p,{via:'part-backlink',role:'owner'});g.backlinkParts=ps2.length;
     if(g.suppressed&&g.source==='descriptor'&&ps2.length>=g._partSet.size*0.95){g.suppressed=false;g.confidence='backlink-verified';g.reviewNote='Every part record points back to this descriptor, so this is one model (e.g. a whole boss arena).'}}}}
  // Materialise each group's complete unique part list and all memberships.
- for(const g of modelGroups){g.classes=[...g._classes].filter(Boolean).sort();g.probableClasses=[...(g._prob||[])].filter(c=>!g._classes.has(c)).sort();if(!g.classes.length&&g.probableClasses.length)g.classes=g.probableClasses;delete g._prob;g.natives=[...g._natives].sort();const rows=[];for(const poff of g._partSet)for(const M of(partRows.get(poff)||[]))if(!rows.includes(M))rows.push(M);rows.sort((a,b)=>out.indexOf(a)-out.indexOf(b));g.parts=rows.map(M=>({m:M.off,p:M.poff}));
-  if(g.suppressed)for(const M of rows){M.modelCandidateGroups=M.modelCandidateGroups||[];M.modelCandidateGroups.push(g.id)}else for(const M of rows){const a=memberships.get(M.poff)||[];a.push(g);memberships.set(M.poff,a)}delete g._partSet;delete g._classes;delete g._natives;}
+ for(const g of modelGroups){g.classes=[...g._classes].filter(Boolean).sort();g.entryClasses=[...g._entryClasses].filter(Boolean).sort();g.handlerClasses=[...g._handlerClasses].filter(Boolean).sort();g.probableClasses=[...(g._prob||[])].filter(c=>!g._classes.has(c)).sort();if(!g.classes.length&&g.probableClasses.length)g.classes=g.probableClasses;delete g._prob;g.natives=[...g._natives].sort();g.classTableRefs=[...new Map((g.classTableRefs||[]).map(x=>[x.cls+'|'+x.table,x])).values()];const rows=[];for(const poff of g._partSet)for(const M of(partRows.get(poff)||[]))if(!rows.includes(M))rows.push(M);rows.sort((a,b)=>out.indexOf(a)-out.indexOf(b));g.parts=rows.map(M=>({m:M.off,p:M.poff}));
+  if(g.suppressed)for(const M of rows){M.modelCandidateGroups=M.modelCandidateGroups||[];M.modelCandidateGroups.push(g.id)}else for(const M of rows){const a=memberships.get(M.poff)||[];a.push(g);memberships.set(M.poff,a)}delete g._partSet;delete g._classes;delete g._entryClasses;delete g._handlerClasses;delete g._natives;}
  // Conservative fallback: only confirmed previous-part chains create a fallback
  // group. Adjacent relocation words are recorded as possible structure, never
  // used to merge unrelated meshes automatically.
@@ -883,8 +2137,9 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
   if(primary){M.modelGroup=primary.id;M.modelKind=primary.kind;M.modelSource=primary.source;M.modelName=primary.displayName||primary.name;M.modelClasses=primary.classes||[];M.modelNatives=primary.natives||[];M.modelDescriptor=primary.descriptor;const ix=primary.parts.findIndex(p=>p.p===M.poff);M.modelPartIndex=ix+1;M.modelPartCount=primary.parts.length;M.modelMembershipConflict=gs.filter(g=>g.kind==='model'&&g.source==='script').length>1;M.modelAlsoIn=gs.slice(1).map(g=>g.id)}
  }
  const membershipConflicts=out.filter(M=>M.modelMembershipConflict).length;
- out.modelGroups=modelGroups;out.modelGroupById=groupById;out.modelMembershipConflicts=membershipConflicts;out.modelRefCount=modelRefs.length;out.modelIndirectRefs=modelRefs.indirectAdded||0;out.modelGraph={chainEdges,possibleNodeEdges,scriptDescriptors:[...scriptDescriptorRoles],descriptorCandidateCount:descriptorCandidates.length,ownerLinked:ownerOf.size,ownerMismatches,policy:'all evidence retained; primary membership is prioritised, never first-claim ownership'};
+ const entryModelRefs=Object.create(null);for(const ref of modelRefs){if(ref.scope!=='entry'||!ref.cls||!['Strat_SetModel','Strat_SetModelEx','Strat_SetModelCollide'].includes(ref.native))continue;(entryModelRefs[ref.cls]||(entryModelRefs[ref.cls]=[])).push({cls:ref.cls,native:ref.native,call:ref.call,arg:ref.arg,argRegister:ref.argRegister,table:Number.isInteger(ref.table)?ref.table:null,register:Number.isInteger(ref.register)?ref.register:null,conditions:Array.isArray(ref.conditions)?ref.conditions:[]})}for(const rows of Object.values(entryModelRefs))rows.sort((a,b)=>a.call-b.call);
+ out.entryModelRefs=entryModelRefs;out.entryInitialSpawnsByClass=entryInitialSpawnsByClass;out.entrySpawnDetailsByClass=entrySpawnDetailsByClass;out.modelGroups=modelGroups;out.modelGroupById=groupById;out.modelMembershipConflicts=membershipConflicts;out.modelRefCount=modelRefs.length;out.modelIndirectRefs=modelRefs.indirectAdded||0;out.modelGraph={chainEdges,possibleNodeEdges,scriptDescriptors:[...scriptDescriptorRoles],descriptorCandidateCount:descriptorCandidates.length,ownerLinked:ownerOf.size,ownerMismatches,policy:'all evidence retained; primary membership is prioritised, never first-claim ownership'};
  return out}
-return{fnv,deflate,packWad,patchLcs,healResDir,SoundPlan,buildPca,bankInfo,riffChunks,ampcSoundOffsets,ampcTracks,rebuildVol,prefabCheck,referrers,parseModels,classReports,KN,parseBank,ResIndex,resResolver,SrcCtx,classify,dataClosure,canon,Builder,copyData,copyGraph,mergeB,copierSelfTest,groupOf,transplantClasses}})();
+return{fnv,deflate,packWad,patchLcs,patchCustomTextures,patchCustomModelVisual,patchCustomModelStaticScript,patchCustomModels,healResDir,SoundPlan,buildPca,bankInfo,riffChunks,ampcSoundOffsets,ampcTracks,rebuildVol,prefabCheck,referrers,parseModels,parseCollisionMesh,buildPrimitiveCollisionShape,buildMeshCollisionShape,applyCollisionTagModesToRecords,classReports,KN,parseBank,ResIndex,resResolver,SrcCtx,classify,dataClosure,canon,Builder,copyData,copyGraph,mergeB,copierSelfTest,groupOf,transplantClasses}})();
 
 export { EC };

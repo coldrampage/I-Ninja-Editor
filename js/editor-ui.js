@@ -2,16 +2,16 @@
 // Parser, editor, assembler, and viewer APIs are imported directly.
 import {
   parseVol, readWad, r2, siWad, instances, fixups
-} from './vol-core.js?v=step43-native-layer-uv';
-import { EC } from './editor-core.js?v=step43-native-layer-uv';
+} from './vol-core.js?v=step110-rotation-boundary-fix';
+import { EC } from './editor-core.js?v=step110-rotation-boundary-fix';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step43-native-layer-uv';
-import { installModelEditor } from './models-panel.js?v=step43-native-layer-uv';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step110-rotation-boundary-fix';
+import { installModelEditor } from './models-panel.js?v=step110-rotation-boundary-fix';
 import { installScriptEditor } from './script-editor.js';
-import { installTexturePanel } from './textures-panel.js?v=step43-native-layer-uv';
+import { installTexturePanel } from './textures-panel.js?v=step110-rotation-boundary-fix';
 import { installTintUi } from './class-tint.js';
-import { installProjectManager } from './project-manager.js?v=step38-music-preview-replacement';
-import { installEntityEditor } from './entity-editor.js?v=step39-enemy-generator-links';
+import { installProjectManager } from './project-manager.js?v=step110-rotation-boundary-fix';
+import { installEntityEditor } from './entity-editor.js?v=step110-rotation-boundary-fix';
 import { installPrefabManager } from './prefabs.js?v=step39-enemy-generator-links';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
@@ -277,7 +277,8 @@ const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setP
 
 const entityEditor=installEntityEditor({
   Viewer,EC,getProject:()=>PRJ,wadOf,getWad,WS,base,put,unzero,srcEnt,
-  addMaxId:prefabManager.addMaxId,ensureClass:prefabManager.ensureClass,pushAdds:prefabManager.pushAdds,stripLinkRegs:prefabManager.stripLinkRegs,summary,rmList,r3,getAudioPca,setTriggerOverlayRender,setPathOverlayRender
+  addMaxId:prefabManager.addMaxId,ensureClass:prefabManager.ensureClass,pushAdds:prefabManager.pushAdds,stripLinkRegs:prefabManager.stripLinkRegs,summary,rmList,r3,getAudioPca,setTriggerOverlayRender,setPathOverlayRender,
+  onCustomModelChange:modelEditor.customInstanceChanged
 });
 edUpdate=entityEditor.update;
 rec=entityEditor.rec;
