@@ -17,3 +17,7 @@ The exporter reads one image connected to the Principled BSDF Base Color input. 
 The export dialog stores model-level collision metadata for the later native collision writer. Box and sphere metadata currently get a wireframe preview. `capsule` and `mesh` are retained as metadata only.
 
 See `../CUSTOM-MODELS.md` for the data contract, editor steps and next implementation milestones.
+
+## Level collision material tags
+
+The level-export panel includes the 21 named raw-tag presets from the in-game debug text viewer plus a custom numeric field. Tags are assigned to selected collision faces through the `ininja_collision_tag` FACE INT attribute. The strings are debug labels; they do not assert friction or physics beyond what has been tested in-game. See `COLLISION-MATERIAL-TAG-REFERENCE.md` for the full list and the unknown meaning of the `0x0100` variants.
