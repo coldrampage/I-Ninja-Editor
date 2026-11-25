@@ -26,7 +26,7 @@
 <input type=file id=file accept=".vol,.VOL,.avl,.AVL,.lcm,.LCM,.lcs,.LCS,.xbm,.XBM,.xbs,.XBS,.json" multiple> <button id=dirbtn title="pick the game folder: every .vol in it is loaded and the .avl with the same name (10.vol + 10.avl) is found automatically">open folder...</button><input type=file id=dirpick webkitdirectory multiple hidden>
 <div class=h>or drop one or more .vol (PC) together with their .avl (paired by name: 10.vol + 10.avl), or a whole folder, loose .LCM/.LCS files, or an Xbox .XBM + .XBS pair on the page</div>
 <div id=lv></div><button id=load disabled>Load selected levels</button> <button id=all disabled>all</button> <button id=none disabled>none</button>
-<div id=st></div><hr><div id=ctl style="display:none">
+<div id=st></div><button id=ilm_launch style="margin:4px 0;width:100%">level models (.inilevel)</button><hr><div id=ctl style="display:none">
 <button id=fit>fit (F)</button> <button id=top>top (T)</button>
 <label><input type=checkbox id=gm checked> level geometry</label>
 <label>&nbsp;&nbsp;<input type=checkbox id=tx checked> textures &nbsp;<input type=checkbox id=vc checked> vertex colours</label>
@@ -57,4 +57,4 @@
 <div id=insp></div><div id=tip></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="js/three-fallback.js"></script>
-<script type="module" src="js/bootstrap.js?v=step110-rotation-boundary-fix"></script>
+<script type="module" src="js/bootstrap.js?v=step146-strat-appearance-preview"></script>
