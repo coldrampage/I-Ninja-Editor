@@ -1,9 +1,9 @@
 import {
   analyseStrats, SiAn, fixups, parseTga, parseVol, parseMaterialResources,
   siCstr, siDisasm, siPrint, siWad, siClass
-} from './vol-core.js?v=step110-rotation-boundary-fix';
-import {parseIninjaModelBundle, parseIninjaModelTextures, base64ToBytes} from './custom-models.js?v=step110-rotation-boundary-fix';
-import {staticModelTemplateA, staticModelTemplateB, collisionModelTemplateA, collisionModelTemplateB, renderTemplateA, renderTemplateB, customModelTemplateLayout} from './custom-model-templates.js?v=step110-rotation-boundary-fix';
+} from './vol-core.js?v=step146-strat-appearance-preview';
+import {parseIninjaModelBundle, parseIninjaModelTextures, base64ToBytes} from './custom-models.js?v=step146-strat-appearance-preview';
+import {staticModelTemplateA, staticModelTemplateB, collisionModelTemplateA, collisionModelTemplateB, renderTemplateA, renderTemplateB, customModelTemplateLayout} from './custom-model-templates.js?v=step146-strat-appearance-preview';
 
 // ---- editor core (pure, no DOM). Its dependencies are explicit module imports.
 const EC=(()=>{
@@ -280,6 +280,53 @@ function rebuildVol(ab,replaced){const files=parseVol(ab),d=new DataView(ab),u8=
   const chunk=r||u8.subarray(f.off,f.off+f.size);parts.push(chunk);const pad=(Math.ceil((pos+size)/2048)*2048)-(pos+size);
   if(i<n-1&&pad)parts.push(new Uint8Array(pad));else if(i==n-1&&pad)parts.push(new Uint8Array(pad));pos=Math.ceil((pos+size)/2048)*2048}
  return parts}
+// Rebuild a VOL/AVL while adding new named entries. Existing payloads are copied
+// byte-for-byte unless explicitly replaced; the directory is re-sorted by the
+// case-sensitive CRC32 filename hash used by the retail VOLT table.
+function rebuildVolWithAdditions(ab,replaced={},additions={}){
+ const files=parseVol(ab),d=new DataView(ab),u8=new Uint8Array(ab),count=d.getUint32(8,true),base=16+12*count;
+ const crc32Name=name=>{let c=0xffffffff;for(let i=0;i<name.length;i++){let v=name.charCodeAt(i)&255;c^=v;for(let k=0;k<8;k++)c=(c>>>1)^((c&1)?0xedb88320:0)}return(c^0xffffffff)>>>0};
+ const normalizeMap=(source,label)=>{const out=new Map();for(const [key,value] of Object.entries(source||{})){const name=String(key);if(!name||name.includes('\0'))throw label+' contains an invalid filename';const lower=name.toLowerCase();if(out.has(lower))throw label+' contains duplicate filename '+name;out.set(lower,{name,value})}return out};
+ const replaceMap=normalizeMap(replaced,'replacement set'),addMap=normalizeMap(additions,'addition set');
+ const entries=[];
+ for(let i=0;i<files.length;i++){
+  const f=files[i],entryPos=16+12*i;
+  const replace=replaceMap.get(f.name.toLowerCase());
+  entries.push({name:f.name,hash:d.getUint32(entryPos,true),flags:d.getUint32(entryPos+4,true),data:replace?toBytes(replace.value):u8.subarray(f.off,f.off+f.size),source:f});
+  if(replace)replaceMap.delete(f.name.toLowerCase());
+ }
+ if(replaceMap.size)throw'replacement target(s) not found in volume: '+[...replaceMap.values()].map(x=>x.name).join(', ');
+ for(const item of addMap.values()){
+  if(files.some(f=>f.name.toLowerCase()===item.name.toLowerCase()))throw'cannot add '+item.name+': that filename already exists in the volume';
+  const data=toBytes(item.value);if(!data.length)throw'cannot add '+item.name+': empty payloads are not supported';
+  entries.push({name:item.name,hash:crc32Name(item.name),flags:1,data,source:null});
+ }
+ entries.sort((a,b)=>a.hash-b.hash||a.name.localeCompare(b.name));
+ for(let i=1;i<entries.length;i++)if(entries[i-1].hash===entries[i].hash)throw'VOL filename CRC32 collision between '+entries[i-1].name+' and '+entries[i].name;
+ const newBase=16+12*entries.length,descriptorBytes=entries.reduce((n,e)=>n+16+e.name.length+1,0),descriptorEnd=newBase+descriptorBytes;
+ const oldDataStart=files.length?Math.min(...files.map(f=>f.off)):2048,dataStart=Math.max(oldDataStart,Math.ceil(descriptorEnd/2048)*2048);
+ if(!Number.isSafeInteger(dataStart)||dataStart<descriptorEnd)throw'VOL directory size is outside the supported range';
+ const directory=new Uint8Array(dataStart),dv=new DataView(directory.buffer);directory.set(u8.subarray(0,16));dv.setUint32(8,entries.length,true);
+ // VOLT header +0x0C stores the byte length of the filename-descriptor area
+ // (the sum of each descriptor's 16-byte range tuple plus NUL-terminated name).
+ // Keeping the source value here makes every archive with additions internally
+ // inconsistent even though the directory can still be parsed by this editor.
+ // Both retail 30.vol and 30.avl confirm this field equals descriptorBytes.
+ dv.setUint32(12,descriptorBytes,true);
+ const parts=[directory];let descPos=newBase,payloadPos=dataStart;
+ for(let i=0;i<entries.length;i++){
+  const e=entries[i],table=16+i*12,size=e.data.length;
+  if(!Number.isSafeInteger(payloadPos+size))throw'VOL payload offsets exceed the safe integer range';
+  dv.setUint32(table,e.hash,true);dv.setUint32(table+4,e.flags>>>0,true);dv.setUint32(table+8,descPos-newBase,true);
+  dv.setUint32(descPos,payloadPos>>>0,true);dv.setUint32(descPos+4,Math.floor(payloadPos/4294967296),true);
+  dv.setUint32(descPos+8,size>>>0,true);dv.setUint32(descPos+12,Math.floor(size/4294967296),true);
+  for(let j=0;j<e.name.length;j++)directory[descPos+16+j]=e.name.charCodeAt(j)&255;
+  directory[descPos+16+e.name.length]=0;descPos+=16+e.name.length+1;
+  parts.push(e.data);const next=Math.ceil((payloadPos+size)/2048)*2048,pad=next-(payloadPos+size);if(pad)parts.push(new Uint8Array(pad));payloadPos=next;
+ }
+ return parts;
+}
+function toBytes(value){if(value instanceof Uint8Array)return value;if(value instanceof ArrayBuffer)return new Uint8Array(value);if(ArrayBuffer.isView(value))return new Uint8Array(value.buffer,value.byteOffset,value.byteLength);throw new TypeError('VOL payload must be bytes')}
 // instances whose link registers point at instance idx
 function referrers(A,B,idx){const imp=fixups(B),h=(imp[0x8000010e]||[])[0];if(h==null)return[];const d=new DataView(A.buffer,A.byteOffset,A.length),U=o=>d.getUint32(o,true),ins=U(h+0x28),lnk=U(h+0x2c),nl=d.getUint16(h+0x32,true),out=new Set();
  for(let i=0;i<nl;i++){const ow=d.getUint16(lnk+4*i,true),rg=d.getUint16(lnk+4*i+2,true),ip=U(ins+ow*INS+0x2c);if(ow!==idx&&U(ip+4*rg)===idx)out.add(ow)}return[...out]}
@@ -713,10 +760,8 @@ function patchCustomModels(A0,B0,wadName,record,srcWad,sourceNames=[]){
  };
  const effectiveCollisionTags=(a,inst,type)=>{
   const manifest=manifestOf(a);
-  // Box and the legacy primitive Cylinder have always shipped with a standable
-  // upward cap. Mesh keeps the Step 104 slide-y default; Sphere remains slide-y.
-  // The old asset.collisionTopTag field is honoured for Mesh only because it was
-  // previously exposed only for that type. New controls are stored per instance.
+  // Preserve the proven legacy presets. Explicit raw 16-bit tags take
+  // precedence over these presets for each orientation class.
   let top=inst?.collisionTopTag;
   if(!['standable','slidey'].includes(top)){
    if(['standable','slidey'].includes(a?.collisionUpwardTagMode))top=a.collisionUpwardTagMode;
@@ -728,7 +773,26 @@ function patchCustomModels(A0,B0,wadName,record,srcWad,sourceNames=[]){
   if(!['walkable','slidey'].includes(side))side=(['walkable','slidey'].includes(a?.collisionSideTag)?a.collisionSideTag:manifest.sideTagMode)||'slidey';
   if(!['standable','slidey'].includes(top))top='slidey';
   if(!['walkable','slidey'].includes(side))side='slidey';
-  return{topTagMode:top,sideTagMode:side};
+  const rawTag=(instanceKey,assetKey,manifestKey,ignoreInherited=false)=>{
+   const raw=inst?.[instanceKey]??(ignoreInherited?undefined:(a?.[assetKey]??manifest[manifestKey]));
+   if(raw==null||raw==='')return null;
+   const value=Number(raw);
+   if(!Number.isInteger(value)||value<0||value>0xffff)throw'custom collision '+instanceKey+' must be a 16-bit material tag (0..65535)';
+   return value;
+  };
+  const rawLabel=(instanceKey,assetKey,manifestKey)=>{
+   const value=inst?.[instanceKey]??a?.[assetKey]??manifest[manifestKey]??'';
+   return String(value).slice(0,48);
+  };
+  return{
+   topTagMode:top,sideTagMode:side,
+   upwardMaterialTag:rawTag('collisionUpwardMaterialTag','collisionUpwardMaterialTag','upwardMaterialTag',['standable','slidey'].includes(inst?.collisionTopTag)),
+   sideMaterialTag:rawTag('collisionSideMaterialTag','collisionSideMaterialTag','sideMaterialTag',['walkable','slidey'].includes(inst?.collisionSideTag)),
+   otherMaterialTag:rawTag('collisionOtherMaterialTag','collisionOtherMaterialTag','otherMaterialTag'),
+   upwardMaterialLabel:rawLabel('collisionUpwardMaterialLabel','collisionUpwardMaterialLabel','upwardMaterialLabel'),
+   sideMaterialLabel:rawLabel('collisionSideMaterialLabel','collisionSideMaterialLabel','sideMaterialLabel'),
+   otherMaterialLabel:rawLabel('collisionOtherMaterialLabel','collisionOtherMaterialLabel','otherMaterialLabel')
+  };
  };
  const needsStaticTemplate=instances.some(inst=>effectiveCollisionType(assetMap.get(inst.assetId),inst)!=='box');
  const collisionEventsAreVerifiedNoops=(wad,c)=>{
@@ -958,7 +1022,7 @@ function patchCustomModels(A0,B0,wadName,record,srcWad,sourceNames=[]){
       return v<live?targetCenter[k]+(sourceValue-srcCenter[k])*(targetHalf[k]/srcHalf[k]):sourceValue;
      }),flags:sd.getUint32(ct.verts+v*16+12,true)
     }));
-    applyCollisionTagModesToRecords(boxRecords,collisionConfig.topTagMode,collisionConfig.sideTagMode);
+    applyCollisionTagModesToRecords(boxRecords,collisionConfig.topTagMode,collisionConfig.sideTagMode,collisionConfig);
     for(let v=0;v<boxRecords.length;v++){
      const q=vertsOff+v*16,rec=boxRecords[v];for(let k=0;k<3;k++)cd.setFloat32(q+k*4,rec.position[k],true);cd.setUint32(q+12,rec.flags>>>0,true);
     }
@@ -972,7 +1036,13 @@ function patchCustomModels(A0,B0,wadName,record,srcWad,sourceNames=[]){
      cd.setInt16(nodesOff+(k*2)*8,nextMin,true);cd.setInt16(nodesOff+(k*2+1)*8,nextMax,true);
     }
    }else if(collisionType==='mesh'){
-    const shape=buildMeshCollisionShape(mesh,{scale:uniformScale,topTagMode:collisionConfig.topTagMode,sideTagMode:collisionConfig.sideTagMode});
+    // .inilevel assets may carry a distinct, triangle-soup collision stream.
+    // Prefer that stream when the adapter provides it; ordinary .inimodel
+    // imports continue to derive collision from their render mesh.
+    const collisionMesh=assetRecord&&assetRecord.nativeCollisionMesh||mesh;
+    const shape=buildMeshCollisionShape(collisionMesh,{scale:uniformScale,...collisionConfig,
+     faceMaterialTags:collisionMesh.faceMaterialTags??collisionConfig.faceMaterialTags,
+     faceFlags:collisionMesh.faceFlags??collisionConfig.faceFlags});
     collOff=bld.alloc(0x30,16);nodesOff=bld.alloc(shape.nodeCount*8,8);vertsOff=bld.alloc(shape.records.length*16,16);
     bld.A.set(ct.A.subarray(ct.coll,ct.coll+0x30),collOff);
     const cd=bld.d;bld.W(collOff,nodesOff);bld.W(collOff+4,shape.nodeCount);bld.W(collOff+0x20,vertsOff);
@@ -1004,7 +1074,7 @@ function patchCustomModels(A0,B0,wadName,record,srcWad,sourceNames=[]){
     }
     for(let r=0;r<shape.records.length;r++){const q=vertsOff+r*16,rec=shape.records[r];for(let k=0;k<3;k++)cd.setFloat32(q+k*4,rec.position[k],true);cd.setUint32(q+12,rec.flags>>>0,true)}
    }else{
-    const shape=buildPrimitiveCollisionShape(collisionType,[targetMin,targetMax],{topTagMode:collisionConfig.topTagMode,sideTagMode:collisionConfig.sideTagMode});
+    const shape=buildPrimitiveCollisionShape(collisionType,[targetMin,targetMax],collisionConfig);
     collOff=bld.alloc(0x30,16);nodesOff=bld.alloc(ct.nodeCount*8,4);vertsOff=bld.alloc(shape.records.length*16,4);
     bld.A.set(ct.A.subarray(ct.coll,ct.coll+0x30),collOff);bld.A.set(ct.A.subarray(ct.nodes,ct.nodes+ct.nodeCount*8),nodesOff);
     const cd=bld.d;bld.W(collOff,nodesOff);bld.W(collOff+0x20,vertsOff);cd.setUint32(collOff+4,ct.nodeCount,true);cd.setUint32(collOff+0x24,shape.records.length,true);
@@ -1609,26 +1679,39 @@ function prefabCheck(A,B,i){const imp=fixups(B),h=(imp[0x8000010e]||[])[0];if(h=
 // tags. Upward surfaces retain the historical positive-Y rule. Side surfaces
 // are faces whose normal is within 0.25 of horizontal (roughly 14.5 degrees from
 // a vertical wall); this gives a narrow, predictable band for wall-running tests.
-function collisionTagForNormal(normal,topTagMode='slidey',sideTagMode='slidey'){
+function validateCollisionMaterialTag(value,label){
+ if(value==null||value==='')return null;
+ const tag=Number(value);
+ if(!Number.isInteger(tag)||tag<0||tag>0xffff)throw(label||'collision material tag')+' must be a 16-bit value between 0x0000 and 0xFFFF';
+ return tag;
+}
+// Assign one raw 16-bit game material tag to each orientation class. The
+// semantic names of most stock values are not yet decoded, so the editor keeps
+// the numeric value authoritative and treats user labels as notes only.
+function collisionTagForNormal(normal,topTagMode='slidey',sideTagMode='slidey',materialTags={}){
  const length=Math.hypot(normal[0],normal[1],normal[2]);if(length<1e-12)return 0x0001;
  const ny=normal[1]/length;
- if(sideTagMode==='walkable'&&Math.abs(ny)<=0.25)return 0x000A;
- if(topTagMode==='standable'&&ny>1e-10)return 0x000A;
- return 0x0001;
+ const side=materialTags.sideMaterialTag==null?(sideTagMode==='walkable'?0x000A:0x0001):validateCollisionMaterialTag(materialTags.sideMaterialTag,'side material tag');
+ const upward=materialTags.upwardMaterialTag==null?(topTagMode==='standable'?0x000A:0x0001):validateCollisionMaterialTag(materialTags.upwardMaterialTag,'upward material tag');
+ const other=materialTags.otherMaterialTag==null?0x0001:validateCollisionMaterialTag(materialTags.otherMaterialTag,'other material tag');
+ if(Math.abs(ny)<=0.25&&(sideTagMode==='walkable'||materialTags.sideMaterialTag!=null))return side;
+ if(ny>1e-10)return upward;
+ return other;
 }
 // Rewrite only the high-16 material tag on triangle-ending records. This lets
 // the known-good retail Box topology receive the same per-instance surface
 // policy as generated primitive and indexed-mesh CollMeshes.
-function applyCollisionTagModesToRecords(records,topTagMode='slidey',sideTagMode='slidey'){
+function applyCollisionTagModesToRecords(records,topTagMode='slidey',sideTagMode='slidey',materialTags={}){
  if(!Array.isArray(records))throw'collision tag application requires a record array';
  if(!['standable','slidey'].includes(topTagMode))throw'upward tag mode must be standable or slidey';
  if(!['walkable','slidey'].includes(sideTagMode))throw'side tag mode must be walkable or slidey';
+ for(const [key,label] of [['upwardMaterialTag','upward'],['sideMaterialTag','side'],['otherMaterialTag','other']])validateCollisionMaterialTag(materialTags?.[key],label+' material tag');
  const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
  for(let i=2;i<records.length;i++){
   const rec=records[i],flags=rec.flags>>>0;if(!(flags&0x40))continue;
   let a=records[i-2].position,b=records[i-1].position,c=rec.position;
   if(flags&0x100)[a,b]=[b,a];
-  const normal=cross(sub(b,a),sub(c,a)),tag=collisionTagForNormal(normal,topTagMode,sideTagMode);
+  const normal=cross(sub(b,a),sub(c,a)),tag=collisionTagForNormal(normal,topTagMode,sideTagMode,materialTags);
   rec.flags=((flags&0xffff)|(tag<<16))>>>0;
  }
  return records;
@@ -1637,7 +1720,7 @@ function applyCollisionTagModesToRecords(records,topTagMode='slidey',sideTagMode
 // single KD leaf. Cylinder preserves and warps the complete, runtime-proven
 // Sphere six-strip stream into a closed cylinder with flat polar-fan caps.
 // Triangle winding is corrected per emitted record using the PC reverse bit.
-function buildPrimitiveCollisionShape(type,bounds,{sphereSegments=12,sphereBands=6,cylinderSides=12,topTagMode=null,sideTagMode='slidey'}={}){
+function buildPrimitiveCollisionShape(type,bounds,{sphereSegments=12,sphereBands=6,cylinderSides=12,topTagMode=null,sideTagMode='slidey',upwardMaterialTag=null,sideMaterialTag=null,otherMaterialTag=null}={}){
  const kind=String(type||'').toLowerCase();
  if(!['box','sphere','cylinder'].includes(kind))throw'unsupported primitive collision shape '+kind;
  const upwardMode=topTagMode==null?((kind==='box'||kind==='cylinder')?'standable':'slidey'):topTagMode;
@@ -1732,7 +1815,7 @@ function buildPrimitiveCollisionShape(type,bounds,{sphereSegments=12,sphereBands
     // Cylinder. Correct the normal before classifying the face so the material
     // policy follows the emitted triangle winding rather than source strip order.
     const correctedNormal=reverse?n.map(v=>-v):n;
-    const materialTag=collisionTagForNormal(correctedNormal,upwardMode,sideTagMode);
+    const materialTag=collisionTagForNormal(correctedNormal,upwardMode,sideTagMode,{upwardMaterialTag,sideMaterialTag,otherMaterialTag});
     flags=0x80|0x40|0x10|(materialTag<<16)|(reverse?0x100:0);
     for(const v of tri)trianglePositions.push(v[0],v[1],v[2]);triangleMaterials.push(materialTag);
    }
@@ -1742,30 +1825,38 @@ function buildPrimitiveCollisionShape(type,bounds,{sphereSegments=12,sphereBands
  records.push({position:[0,0,0],flags:0});
  if(records.length>255)throw kind+' collision generated '+records.length+' records; the single-leaf PC CollMesh limit is 255';
  const triangleCount=triangleMaterials.length;if(!triangleCount)throw kind+' collision generated no non-degenerate triangles';
+ const materialCounts={};for(const tag of triangleMaterials)materialCounts[tag]=(materialCounts[tag]||0)+1;
  const radiusHeader=kind==='cylinder'?Math.hypot(radius,half[1]):kind==='sphere'?radius:Math.hypot(...half);
- return{type:kind,centre,radius:radiusHeader,radiusSq:radiusHeader*radiusHeader,bounds:[shapeMin,shapeMax],sourceBounds:[sourceMin,sourceMax],records,trianglePositions:Float32Array.from(trianglePositions),triangleMaterials:Uint16Array.from(triangleMaterials),triangleCount,recordCount:records.length,leafRecordCount:records.length,stripCount:strips.length,topTagMode:upwardMode,sideTagMode};
+ return{type:kind,centre,radius:radiusHeader,radiusSq:radiusHeader*radiusHeader,bounds:[shapeMin,shapeMax],sourceBounds:[sourceMin,sourceMax],records,trianglePositions:Float32Array.from(trianglePositions),triangleMaterials:Uint16Array.from(triangleMaterials),triangleCount,recordCount:records.length,leafRecordCount:records.length,stripCount:strips.length,topTagMode:upwardMode,sideTagMode,upwardMaterialTag,sideMaterialTag,otherMaterialTag,materialCounts};
 }
 
 // Build a native PC CollMesh from the exact indexed triangles of an imported
 // .inimodel mesh. Large meshes are partitioned into retail PC KD leaves; every
 // leaf owns an independent, terminated triangle strip (<=255 records). The
 // six root-bound marker words match the verified retail/Step 103 pattern.
-function buildMeshCollisionShape(mesh,{scale=1,topTagMode='slidey',sideTagMode='slidey',maxTrianglesPerLeaf=48}={}){
+function buildMeshCollisionShape(mesh,{scale=1,topTagMode='slidey',sideTagMode='slidey',upwardMaterialTag=null,sideMaterialTag=null,otherMaterialTag=null,faceMaterialTags=null,faceFlags=null,facePlacementModes=null,maxTrianglesPerLeaf=48,trianglePlacementMode='centroid',partitionBounds=null}={}){
  if(!mesh||!mesh.positions||!mesh.normals||!mesh.indices)throw'mesh collision requires positions, normals and triangle indices';
  if(!Number.isFinite(scale)||scale<=0)throw'mesh collision scale must be finite and positive';
  if(!['standable','slidey'].includes(topTagMode))throw'mesh top-tag mode must be standable or slidey';
  if(!['walkable','slidey'].includes(sideTagMode))throw'mesh side-tag mode must be walkable or slidey';
  if(!Number.isInteger(maxTrianglesPerLeaf)||maxTrianglesPerLeaf<1||maxTrianglesPerLeaf>50)throw'mesh KD leaf triangle limit must be between 1 and 50';
+ if(!['centroid','overlap'].includes(trianglePlacementMode))throw'mesh KD trianglePlacementMode must be centroid or overlap';
  const vertexCount=mesh.positions.length/3,indexCount=mesh.indices.length;
  if(!Number.isInteger(vertexCount)||vertexCount<3||mesh.normals.length!==mesh.positions.length)throw'mesh collision has inconsistent position/normal buffers';
  if(indexCount<3||indexCount%3)throw'mesh collision index buffer must contain complete triangles';
- const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity],points=new Array(vertexCount);
+ if(faceMaterialTags!=null&&(faceMaterialTags.length!==indexCount/3||Array.from(faceMaterialTags).some(v=>!Number.isInteger(Number(v))||Number(v)<0||Number(v)>0xffff)))throw'mesh collision faceMaterialTags must contain one unsigned 16-bit value per triangle';
+ if(faceFlags!=null&&(faceFlags.length!==indexCount/3||Array.from(faceFlags).some(v=>!Number.isInteger(Number(v))||Number(v)<0||Number(v)>0xffff)))throw'mesh collision faceFlags must contain one unsigned 16-bit value per triangle';
+ if(facePlacementModes!=null&&(facePlacementModes.length!==indexCount/3||Array.from(facePlacementModes).some(v=>!['centroid','overlap'].includes(String(v)))))throw'mesh collision facePlacementModes must contain centroid or overlap for each triangle';
+ const geometryMin=[Infinity,Infinity,Infinity],geometryMax=[-Infinity,-Infinity,-Infinity],points=new Array(vertexCount);
  for(let v=0;v<vertexCount;v++){
   const p=[mesh.positions[v*3]*scale,mesh.positions[v*3+1]*scale,-mesh.positions[v*3+2]*scale];
   if(!p.every(Number.isFinite))throw'mesh collision contains a non-finite vertex at '+v;
-  points[v]=p;for(let k=0;k<3;k++){min[k]=Math.min(min[k],p[k]);max[k]=Math.max(max[k],p[k]);}
+  points[v]=p;for(let k=0;k<3;k++){geometryMin[k]=Math.min(geometryMin[k],p[k]);geometryMax[k]=Math.max(geometryMax[k],p[k]);}
  }
- if(min.some((v,k)=>!Number.isFinite(v)||max[k]-v<1e-5))throw'mesh collision requires non-zero X, Y and Z bounds';
+ const min=partitionBounds?.min?Array.from(partitionBounds.min,Number):geometryMin.slice(),max=partitionBounds?.max?Array.from(partitionBounds.max,Number):geometryMax.slice();
+ if(min.length!==3||max.length!==3||min.some(v=>!Number.isFinite(v))||max.some(v=>!Number.isFinite(v))||min.some((v,k)=>v>=max[k]))throw'mesh collision partition bounds must be finite increasing XYZ bounds';
+ const extents=max.map((v,k)=>v-min[k]);
+ if(Math.max(...extents)<1e-5)throw'mesh collision requires a finite non-zero two-dimensional or three-dimensional partition extent';
  const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],norm=a=>Math.hypot(...a);
  const triangles=[],materialCounts={};let upwardFacingTriangles=0,sideFacingTriangles=0;
  for(let t=0;t<indexCount/3;t++){
@@ -1780,56 +1871,90 @@ function buildMeshCollisionShape(mesh,{scale=1,topTagMode='slidey',sideTagMode='
   const normalLength=norm(orientedNormal),normalY=normalLength?orientedNormal[1]/normalLength:0;
   const upward=orientedNormal[1]>1e-10,sideFacing=Math.abs(normalY)<=0.25;
   if(upward)upwardFacingTriangles++;if(sideFacing)sideFacingTriangles++;
-  const materialTag=collisionTagForNormal(orientedNormal,topTagMode,sideTagMode);
+  const materialTag=faceMaterialTags==null?collisionTagForNormal(orientedNormal,topTagMode,sideTagMode,{upwardMaterialTag,sideMaterialTag,otherMaterialTag}):Number(faceMaterialTags[t]);
+  // The retail level CollMesh uses additional low-order triangle-end flags
+  // (not just valid/end/reverse). Preserve caller-supplied unknown bits when
+  // rebuilding an existing level tree; generated custom triangles retain the
+  // known working 0x10 extra bit by default. 0x80/0x40/0x100 are rebuilt.
+  const extraFlags=faceFlags==null?0x10:(Number(faceFlags[t])&0xffff&~(0x80|0x40|0x100));
   materialCounts[materialTag]=(materialCounts[materialTag]||0)+1;
-  triangles.push({id:t,points:triPoints,normals:triNormals,reverse,materialTag,centroid:[0,1,2].map(k=>(triPoints[0][k]+triPoints[1][k]+triPoints[2][k])/3)});
+  triangles.push({id:t,sourceId:t,points:triPoints,normals:triNormals,reverse,materialTag,extraFlags,placementMode:facePlacementModes==null?trianglePlacementMode:String(facePlacementModes[t]),centroid:[0,1,2].map(k=>(triPoints[0][k]+triPoints[1][k]+triPoints[2][k])/3)});
  }
- // Deterministic spatial KD partition based on triangle centroids. Split planes
- // are quantized to 1/1024 game units and each leaf remains below the PC 255
- // record ceiling. Keep the Step 102 split policy for compatibility.
- const leafRefs=[];
- function partition(items,leaves){
-  if(leaves===1){const leaf={type:'leaf',triangles:items,firstRecord:0,recordCount:0};leafRefs.push(leaf);return leaf;}
-  const leftLeaves=Math.floor(leaves/2),rightLeaves=leaves-leftLeaves;
-  const minCut=Math.max(leftLeaves,items.length-maxTrianglesPerLeaf*rightLeaves),maxCut=Math.min(items.length-rightLeaves,maxTrianglesPerLeaf*leftLeaves);
-  const targetCut=Math.max(minCut,Math.min(maxCut,Math.round(items.length*leftLeaves/leaves)));
+ // Large custom faces may cross several KD query regions. Centroid placement
+ // reproduces the original retail ownership convention, but a single stored
+ // copy can be invisible to a query that only descends into another intersected
+ // region. The native inilevel merger therefore opts into overlap placement for
+ // newly generated local subtrees: intact whole faces are repeated in each child
+ // AABB they intersect. Ordinary .inimodel Mesh collision retains centroid mode.
+ const triangleIntersectsAabb=(points,boxMin,boxMax)=>{
+  const centre=boxMin.map((v,k)=>(v+boxMax[k])*0.5),half=boxMin.map((v,k)=>(boxMax[k]-v)*0.5+1e-5);
+  const vertices=points.map(point=>point.map((value,k)=>value-centre[k]));
+  const edges=[vertices[1].map((v,k)=>v-vertices[0][k]),vertices[2].map((v,k)=>v-vertices[1][k]),vertices[0].map((v,k)=>v-vertices[2][k])];
+  const axes=[[1,0,0],[0,1,0],[0,0,1],
+   [edges[0][1]*edges[1][2]-edges[0][2]*edges[1][1],edges[0][2]*edges[1][0]-edges[0][0]*edges[1][2],edges[0][0]*edges[1][1]-edges[0][1]*edges[1][0]]];
+  for(const edge of edges)axes.push([0,edge[2],-edge[1]],[-edge[2],0,edge[0]],[edge[1],-edge[0],0]);
+  for(const axis of axes){const lengthSq=axis[0]*axis[0]+axis[1]*axis[1]+axis[2]*axis[2];if(lengthSq<1e-18)continue;const projections=vertices.map(point=>point[0]*axis[0]+point[1]*axis[1]+point[2]*axis[2]),radius=half[0]*Math.abs(axis[0])+half[1]*Math.abs(axis[1])+half[2]*Math.abs(axis[2]);if(Math.min(...projections)>radius+1e-6||Math.max(...projections)<-radius-1e-6)return false;}
+  return true;
+ };
+ const splitRegions=(region,axis,split)=>{
+  const left={min:region.min.slice(),max:region.max.slice()},right={min:region.min.slice(),max:region.max.slice()};
+  left.max[axis]=Math.min(left.max[axis],split);right.min[axis]=Math.max(right.min[axis],split);return{left,right};
+ };
+ const splitItems=(items,axis,split,leftRegion,rightRegion)=>{
+  const left=[],right=[];
+  for(const item of items){
+   if(item.placementMode==='centroid'){(item.centroid[axis]<=split?left:right).push(item);}
+   else{if(triangleIntersectsAabb(item.points,leftRegion.min,leftRegion.max))left.push(item);if(triangleIntersectsAabb(item.points,rightRegion.min,rightRegion.max))right.push(item);}
+  }
+  return{left,right};
+ };
+ const partition=(items,region,depth=0)=>{
+  if(items.length<=maxTrianglesPerLeaf){const leaf={type:'leaf',triangles:items,firstRecord:0,recordCount:0};return leaf;}
+  if(depth>64)throw'mesh KD '+trianglePlacementMode+' partition exceeded 64 levels';
   let best=null;
+  const consider=(axis,split)=>{
+   if(!Number.isFinite(split)||split<=region.min[axis]+1e-6||split>=region.max[axis]-1e-6)return;
+   const regions=splitRegions(region,axis,split),{left,right}=splitItems(items,axis,split,regions.left,regions.right);
+   if(!left.length||!right.length||Math.max(left.length,right.length)>=items.length)return;
+   const duplicates=left.length+right.length-items.length;
+   const score=Math.max(left.length,right.length)+0.001*Math.abs(left.length-right.length)+(trianglePlacementMode==='overlap'?0.05*duplicates:0);
+   if(!best||score<best.score)best={axis,split,left,right,regions,score};
+  };
+  const fractions=[0.2,0.33,0.5,0.67,0.8];
   for(let axis=0;axis<3;axis++){
-   const sorted=items.slice().sort((a,b)=>a.centroid[axis]-b.centroid[axis]||a.id-b.id);
-   for(let cut=minCut;cut<=maxCut;cut++){
-    const leftMax=sorted[cut-1].centroid[axis],rightMin=sorted[cut].centroid[axis];
-    if(rightMin-leftMax<1e-10)continue;
-    const split=Math.round(((leftMax+rightMin)*0.5)*1024)/1024,eps=0.0001;
-    if(split<leftMax-eps||split>rightMin+eps)continue;
-    const vals=items.map(t=>t.centroid[axis]),spread=Math.max(1e-9,Math.max(...vals)-Math.min(...vals)),gap=rightMin-leftMax;
-    const score=Math.abs(cut-targetCut)-Math.min(gap/spread,0.1)*0.01;
-    if(!best||score<best.score)best={axis,sorted,cut,split,score};
+   const centroids=items.map(t=>t.centroid[axis]).sort((a,b)=>a-b);
+   for(const f of fractions){
+    const cut=Math.min(centroids.length-1,Math.max(1,Math.floor(items.length*f)));
+    const a=centroids[cut-1],b=centroids[cut];if(!(b-a>1e-9))continue;
+    // PC split coordinates are quantized to 1/1024. Choose a representable
+    // plane between centroid groups; overlap mode then duplicates any full face
+    // that also extends into the opposite child region.
+    let q=Math.floor(((a+b)*0.5)*1024);
+    if(q/1024<=a)q=Math.floor(a*1024)+1;
+    const split=q/1024;if(split>a+1e-9&&split<b-1e-9)consider(axis,split);
    }
+   const midpoint=Math.round(((region.min[axis]+region.max[axis])*0.5)*1024)/1024;
+   consider(axis,midpoint);
   }
-  if(!best){
-   const spreads=[0,1,2].map(axis=>{const vals=items.map(t=>t.centroid[axis]);return Math.max(...vals)-Math.min(...vals);});
-   const axis=[0,1,2].sort((a,b)=>spreads[b]-spreads[a])[0],sorted=items.slice().sort((a,b)=>a.centroid[axis]-b.centroid[axis]||a.id-b.id),cut=targetCut;
-   const leftMax=sorted[cut-1].centroid[axis],rightMin=sorted[cut].centroid[axis];
-   if(rightMin-leftMax<1e-10)throw'mesh KD partition cannot separate coincident triangle centroids; reduce or retopologize the mesh';
-   const split=Math.round(((leftMax+rightMin)*0.5)*1024)/1024;
-   if(split<leftMax-0.0001||split>rightMin+0.0001)throw'mesh KD split plane cannot be represented at 1/1024-unit precision; reduce model scale';
-   best={axis,sorted,cut,split,score:0};
-  }
-  const left=best.sorted.slice(0,best.cut),right=best.sorted.slice(best.cut),node={type:'internal',axis:best.axis,split:best.split,left:null,right:null};
-  if(!left.length||!right.length||left.length>maxTrianglesPerLeaf*leftLeaves||right.length>maxTrianglesPerLeaf*rightLeaves)throw'mesh KD partition produced an invalid leaf allocation';
-  node.left=partition(left,leftLeaves);node.right=partition(right,rightLeaves);return node;
- }
- const leafCount=Math.ceil(triangles.length/maxTrianglesPerLeaf),root=partition(triangles,leafCount);
+  if(!best)throw'mesh KD cannot separate more than '+maxTrianglesPerLeaf+' triangles using 1/1024 PC split planes in '+trianglePlacementMode+' mode; collision faces may span the entire remaining region';
+  return{type:'internal',axis:best.axis,split:best.split,left:partition(best.left,best.regions.left,depth+1),right:partition(best.right,best.regions.right,depth+1)};
+ };
+ const root=partition(triangles,{min:min.slice(),max:max.slice()});
  const nodes=Array.from({length:6},()=>({type:'bound'})),nodeIndex=new Map();
  function flatten(node){const index=nodes.length;nodes.push(node);nodeIndex.set(node,index);if(node.type==='internal'){flatten(node.left);flatten(node.right);}return index;}
  if(flatten(root)!==6)throw'mesh KD root index is not 6';
  const orderedLeaves=[];const visit=node=>{if(node.type==='leaf')orderedLeaves.push(node);else{visit(node.left);visit(node.right);}};visit(root);
- if(orderedLeaves.length!==leafCount)throw'mesh KD leaf count does not match its partition';
+ const leafCount=orderedLeaves.length;
+ const kdTriangles=orderedLeaves.flatMap(leaf=>leaf.triangles),kdMaterialCounts={};
+ for(const tri of kdTriangles)kdMaterialCounts[tri.materialTag]=(kdMaterialCounts[tri.materialTag]||0)+1;
+ const placedSourceIds=new Set(kdTriangles.map(t=>t.sourceId));
+ if(placedSourceIds.size!==triangles.length||triangles.some(tri=>!placedSourceIds.has(tri.sourceId)))throw'mesh KD '+trianglePlacementMode+' partition lost or failed to place source triangles';
+ if(trianglePlacementMode==='centroid'&&kdTriangles.length!==triangles.length)throw'mesh KD centroid partition unexpectedly duplicated source triangles';
  const records=[];
  for(const leaf of orderedLeaves){
   let previousLast=null;
   for(let i=0;i<leaf.triangles.length;i++){
-   const tri=leaf.triangles[i],ps=tri.points,flags=(0x80|0x40|0x10|(tri.materialTag<<16)|(tri.reverse?0x100:0))>>>0;
+   const tri=leaf.triangles[i],ps=tri.points,flags=(0x80|0x40|tri.extraFlags|(tri.materialTag<<16)|(tri.reverse?0x100:0))>>>0;
    const face=[{position:ps[0].slice(),flags:0x80},{position:ps[1].slice(),flags:0x80},{position:ps[2].slice(),flags}];
    if(i===0)records.push(...face);
    else records.push({position:previousLast.position.slice(),flags:0x80},face[0],{position:face[0].position.slice(),flags:0x80},face[1],face[2]);
@@ -1847,11 +1972,33 @@ function buildMeshCollisionShape(mesh,{scale=1,topTagMode='slidey',sideTagMode='
  for(const leaf of orderedLeaves)if(leaf.recordCount>255||leaf.firstRecord>0xffffff)throw'mesh KD leaf record range cannot be encoded';
  const centre=min.map((v,k)=>(v+max[k])*0.5);let radius=0;
  for(const p of points)radius=Math.max(radius,norm(sub(p,centre)));
- // Verify that the quantized split at every internal node still separates the
- // centroid groups stored under its children. This catches unsafe KD encodes.
- function verify(node){if(node.type==='leaf')return node.triangles;const left=verify(node.left),right=verify(node.right);for(const t of left)if(t.centroid[node.axis]>node.split+0.0001)throw'mesh KD left child contains a triangle centroid above its split';for(const t of right)if(t.centroid[node.axis]<node.split-0.0001)throw'mesh KD right child contains a triangle centroid below its split';return left.concat(right);}
- if(verify(root).length!==triangles.length)throw'mesh KD partition lost triangle records';
- return{type:'mesh',bounds:[min,max],centre,radius,radiusSq:radius*radius,records,nodes,nodeCount:nodes.length,leafCount,triangleCount:triangles.length,recordCount:records.length,triangles,materialCounts,topTagMode,sideTagMode,upwardFacingTriangles,sideFacingTriangles};
+ // Verify that every emitted whole triangle intersects its assigned leaf. In
+ // overlap mode also require a copy in every final terminal leaf intersected by
+ // each original face, including leaves created by this local subdivision.
+ const finalRegions=new Map(),placementsBySource=new Map();
+ function verify(node,region){
+  node.region={min:region.min.slice(),max:region.max.slice()};
+  if(node.type==='leaf'){
+   finalRegions.set(node,region);
+   for(const tri of node.triangles){
+    if(tri.placementMode==='centroid'){for(let k=0;k<3;k++)if(tri.centroid[k]<region.min[k]-0.001||tri.centroid[k]>region.max[k]+0.001)throw'mesh KD centroid-owned triangle '+tri.id+' is outside its spatial region';}
+    else if(!triangleIntersectsAabb(tri.points,region.min,region.max))throw'mesh KD overlap-owned triangle '+tri.id+' does not intersect its spatial region';
+    if(!placementsBySource.has(tri.sourceId))placementsBySource.set(tri.sourceId,new Set());
+    placementsBySource.get(tri.sourceId).add(node);
+   }
+   return node.triangles;
+  }
+  const axis=node.axis;if(node.split<region.min[axis]-0.001||node.split>region.max[axis]+0.001)throw'mesh KD split is outside its inherited region';
+  const childRegions=splitRegions(region,axis,node.split);
+  return verify(node.left,childRegions.left).concat(verify(node.right,childRegions.right));
+ }
+ if(verify(root,{min:min.slice(),max:max.slice()}).length!==kdTriangles.length)throw'mesh KD partition lost whole triangles';
+ if(triangles.some(tri=>tri.placementMode==='overlap'))for(const tri of triangles.filter(item=>item.placementMode==='overlap')){
+  const assigned=placementsBySource.get(tri.sourceId)||new Set();
+  for(const [leaf,region] of finalRegions)if(triangleIntersectsAabb(tri.points,region.min,region.max)&&!assigned.has(leaf))throw'mesh KD overlap partition omitted source triangle '+tri.sourceId+' from intersected final leaf';
+ }
+ const maxSourceAreaError=0;
+ return{type:'mesh',bounds:[min,max],centre,radius,radiusSq:radius*radius,records,nodes,nodeCount:nodes.length,leafCount,triangleCount:triangles.length,kdTriangleCount:kdTriangles.length,duplicateTrianglePlacements:kdTriangles.length-triangles.length,trianglePlacementMode,facePlacementModes:triangles.map(tri=>tri.placementMode),recordCount:records.length,triangles,kdTriangles,materialCounts,kdMaterialCounts,maxSourceAreaError,topTagMode,sideTagMode,upwardMaterialTag,sideMaterialTag,otherMaterialTag,upwardFacingTriangles,sideFacingTriangles};
 }
 
 // Read a native object CollMesh referenced by a Strat_SetModelCollide model table.
@@ -1866,7 +2013,7 @@ function parseCollisionMesh(A,B,collOffset){
  const imp=fixups(B),d=new DataView(A.buffer,A.byteOffset,A.byteLength),U=o=>d.getUint32(o,true),F=o=>d.getFloat32(o,true);
  const nodePtr=U(collOffset),nodeCount=U(collOffset+4),vertexPtr=U(collOffset+0x20),vertexCount=U(collOffset+0x24);
  if(!nodePtr||nodeCount<1||nodeCount>4096||nodePtr+nodeCount*8>A.length)return fail('KD-node pointer/count is invalid');
- if(!vertexPtr||vertexCount<3||vertexCount>100000||vertexPtr+vertexCount*16>A.length)return fail('vertex-record pointer/count is invalid');
+ if(!vertexPtr||vertexCount<3||vertexCount>1000000||vertexPtr+vertexCount*16>A.length)return fail('vertex-record pointer/count is invalid');
  const relocations={nodePointer:imp.rel.has(collOffset),vertexPointer:imp.rel.has(collOffset+0x20)};
  const nodes=[];for(let i=0;i<nodeCount;i++){const o=nodePtr+i*8;nodes.push({index:i,word0:U(o),word1:U(o+4),hex0:'0x'+U(o).toString(16).padStart(8,'0'),hex1:'0x'+U(o+4).toString(16).padStart(8,'0')})}
  // PC retail KD layout reconstructed from the unmodified base-game 10.vol.
@@ -2140,6 +2287,6 @@ function parseModels(A,B){const imp=fixups(B),meshes=imp[0x80000024];if(!meshes|
  const entryModelRefs=Object.create(null);for(const ref of modelRefs){if(ref.scope!=='entry'||!ref.cls||!['Strat_SetModel','Strat_SetModelEx','Strat_SetModelCollide'].includes(ref.native))continue;(entryModelRefs[ref.cls]||(entryModelRefs[ref.cls]=[])).push({cls:ref.cls,native:ref.native,call:ref.call,arg:ref.arg,argRegister:ref.argRegister,table:Number.isInteger(ref.table)?ref.table:null,register:Number.isInteger(ref.register)?ref.register:null,conditions:Array.isArray(ref.conditions)?ref.conditions:[]})}for(const rows of Object.values(entryModelRefs))rows.sort((a,b)=>a.call-b.call);
  out.entryModelRefs=entryModelRefs;out.entryInitialSpawnsByClass=entryInitialSpawnsByClass;out.entrySpawnDetailsByClass=entrySpawnDetailsByClass;out.modelGroups=modelGroups;out.modelGroupById=groupById;out.modelMembershipConflicts=membershipConflicts;out.modelRefCount=modelRefs.length;out.modelIndirectRefs=modelRefs.indirectAdded||0;out.modelGraph={chainEdges,possibleNodeEdges,scriptDescriptors:[...scriptDescriptorRoles],descriptorCandidateCount:descriptorCandidates.length,ownerLinked:ownerOf.size,ownerMismatches,policy:'all evidence retained; primary membership is prioritised, never first-claim ownership'};
  return out}
-return{fnv,deflate,packWad,patchLcs,patchCustomTextures,patchCustomModelVisual,patchCustomModelStaticScript,patchCustomModels,healResDir,SoundPlan,buildPca,bankInfo,riffChunks,ampcSoundOffsets,ampcTracks,rebuildVol,prefabCheck,referrers,parseModels,parseCollisionMesh,buildPrimitiveCollisionShape,buildMeshCollisionShape,applyCollisionTagModesToRecords,classReports,KN,parseBank,ResIndex,resResolver,SrcCtx,classify,dataClosure,canon,Builder,copyData,copyGraph,mergeB,copierSelfTest,groupOf,transplantClasses}})();
+return{fnv,deflate,packWad,patchLcs,patchCustomTextures,patchCustomModelVisual,patchCustomModelStaticScript,patchCustomModels,healResDir,SoundPlan,buildPca,bankInfo,riffChunks,ampcSoundOffsets,ampcTracks,rebuildVol,rebuildVolWithAdditions,prefabCheck,referrers,parseModels,parseCollisionMesh,buildPrimitiveCollisionShape,buildMeshCollisionShape,applyCollisionTagModesToRecords,classReports,KN,parseBank,ResIndex,resResolver,SrcCtx,classify,dataClosure,canon,Builder,copyData,copyGraph,mergeB,copierSelfTest,groupOf,transplantClasses}})();
 
 export { EC };

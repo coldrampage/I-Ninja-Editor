@@ -193,6 +193,127 @@ function parseIninjaModelTextures(input) {
   return {manifest, materials, textures};
 }
 
+
+// Parse the Blender level interchange bundle (.inilevel). This deliberately
+// shares the same ZIP/TGA safety checks as .inimodel but has independent render
+// vertices (24-byte XYZ/BGRA/UV) and a separate optional collision record stream.
+function parseIninjaLevelBundle(input) {
+  const entries = unzipStored(input);
+  let manifest;
+  try { manifest = JSON.parse(te.decode(entries.get('manifest.json'))); }
+  catch (e) { throw new Error('invalid .inilevel manifest: ' + e.message); }
+  if (!manifest || manifest.format !== 'ininja-level-model' || manifest.version !== 1) {
+    throw new Error('unsupported .inilevel format (expected ininja-level-model v1)');
+  }
+  if (manifest.coordinateSystem !== 'i-ninja-y-up') {
+    throw new Error('unsupported level coordinate system; re-export with the Blender .inilevel add-on');
+  }
+  const render = manifest.render;
+  if (!render || render.vertexLayout !== 'position3-bgra8-uv2-f32' || Number(render.vertexStride) !== 24 || render.indexFormat !== 'uint16-triangles') {
+    throw new Error('unsupported .inilevel render layout (expected 24-byte position/BGRA/UV vertices and uint16 triangle indices)');
+  }
+  if (!Array.isArray(manifest.materials) || !manifest.materials.length || manifest.materials.length > MAX_MATERIALS) {
+    throw new Error('manifest must contain 1–' + MAX_MATERIALS + ' level materials');
+  }
+  if (!Array.isArray(render.meshes) || !render.meshes.length || render.meshes.length > MAX_MESHES) {
+    throw new Error('manifest must contain 1–' + MAX_MESHES + ' render mesh parts');
+  }
+  const geometryName = render.geometryFile || 'render.bin';
+  if (!safeName(geometryName) || !entries.has(geometryName)) throw new Error('missing .inilevel render geometry buffer');
+  const geometry = entries.get(geometryName);
+  const gd = new DataView(geometry.buffer, geometry.byteOffset, geometry.byteLength);
+  const materials = manifest.materials.map((m, i) => {
+    if (!m || typeof m.name !== 'string') throw new Error('level material ' + i + ' has no name');
+    const color = Array.isArray(m.baseColor) && m.baseColor.length === 4 ? m.baseColor.map(Number) : [1, 1, 1, 1];
+    if (color.some(v => !Number.isFinite(v) || v < 0 || v > 1)) throw new Error('level material ' + i + ' has an invalid baseColor');
+    const alphaMode = ['OPAQUE', 'MASK', 'BLEND'].includes(m.alphaMode) ? m.alphaMode : 'OPAQUE';
+    const blendMode = ['normal', 'additive', 'subtractive'].includes(m.blendMode) ? m.blendMode : 'normal';
+    const alphaCutoff = Number.isFinite(+m.alphaCutoff) ? Math.max(0, Math.min(1, +m.alphaCutoff)) : 0.5;
+    const texture = m.texture == null ? null : String(m.texture);
+    if (texture !== null) {
+      if (!safeName(texture) || !entries.has(texture)) throw new Error('level material ' + i + ' references a missing/unsafe texture');
+      validateTga(entries.get(texture), texture);
+    }
+    return {name: m.name, baseColor: color, alphaMode, alphaCutoff, blendMode, doubleSided: !!m.doubleSided, texture};
+  });
+  const meshes = render.meshes.map((m, i) => {
+    if (!m || typeof m.name !== 'string') throw new Error('render mesh ' + i + ' has no name');
+    const vo = Number(m.vertexOffset), vc = Number(m.vertexCount), io = Number(m.indexOffset), ic = Number(m.indexCount), mi = Number(m.material);
+    if (![vo, vc, io, ic, mi].every(Number.isSafeInteger) || vo < 0 || io < 0 || vc < 3 || vc > 65535 || ic < 3 || ic % 3 || mi < 0 || mi >= materials.length) {
+      throw new Error('render mesh ' + i + ' has invalid buffer ranges or material index');
+    }
+    if ((vo & 3) || (io & 1) || vo + vc * 24 > geometry.length || io + ic * 2 > geometry.length) {
+      throw new Error('render mesh ' + i + ' buffer range is outside render.bin');
+    }
+    const positions = new Float32Array(vc * 3), colors = new Uint8Array(vc * 4), uvs = new Float32Array(vc * 2);
+    for (let v = 0; v < vc; v++) {
+      const p = vo + v * 24, po = v * 3, co = v * 4, uo = v * 2;
+      const x = gd.getFloat32(p, true), y = gd.getFloat32(p + 4, true), z = gd.getFloat32(p + 8, true);
+      if (![x, y, z].every(Number.isFinite) || Math.max(Math.abs(x), Math.abs(y), Math.abs(z)) >= 1.0e7) {
+        throw new Error('render mesh ' + i + ' contains a non-finite/invalid position');
+      }
+      positions[po] = x; positions[po + 1] = y; positions[po + 2] = z;
+      // File bytes are BGRA8; Three.js vertex colours are RGBA.
+      colors[co] = geometry[p + 14]; colors[co + 1] = geometry[p + 13];
+      colors[co + 2] = geometry[p + 12]; colors[co + 3] = geometry[p + 15];
+      const u = gd.getFloat32(p + 16, true), v0 = gd.getFloat32(p + 20, true);
+      if (!Number.isFinite(u) || !Number.isFinite(v0)) throw new Error('render mesh ' + i + ' contains non-finite UV coordinates');
+      uvs[uo] = u; uvs[uo + 1] = v0;
+    }
+    const indices = new Uint16Array(ic);
+    for (let k = 0; k < ic; k++) {
+      const index = gd.getUint16(io + k * 2, true);
+      if (index >= vc) throw new Error('render mesh ' + i + ' has an out-of-range triangle index');
+      indices[k] = index;
+    }
+    return {name: m.name, material: mi, positions, colors, uvs, indices, vertexCount: vc, indexCount: ic};
+  });
+
+  const textures = new Map();
+  for (const m of materials) if (m.texture && !textures.has(m.texture)) textures.set(m.texture, entries.get(m.texture));
+
+  let collision = null;
+  const c = manifest.collision || {};
+  if (c.present || c.geometryFile) {
+    if (c.recordLayout !== 'position3-f32-flags-u32' || Number(c.recordStride) !== 16) {
+      throw new Error('unsupported .inilevel collision layout (expected 16-byte XYZ/flags records)');
+    }
+    const collisionName = c.geometryFile || 'collision.bin';
+    if (!safeName(collisionName) || !entries.has(collisionName)) throw new Error('manifest declares collision but collision.bin is missing');
+    const records = entries.get(collisionName);
+    const recordCount = Number(c.recordCount), triangleCount = Number(c.triangleCount);
+    if (!Number.isSafeInteger(recordCount) || recordCount < 0 || recordCount % 3 || records.length !== recordCount * 16 ||
+        !Number.isSafeInteger(triangleCount) || triangleCount !== recordCount / 3) {
+      throw new Error('collision.bin record/triangle counts do not match the manifest');
+    }
+    const rd = new DataView(records.buffer, records.byteOffset, records.byteLength);
+    const positions = new Float32Array(triangleCount * 9), tags = new Uint16Array(triangleCount), flags = new Uint32Array(recordCount), tagCounts = {};
+    for (let t = 0; t < triangleCount; t++) {
+      let tag = null;
+      for (let corner = 0; corner < 3; corner++) {
+        const ri = t * 3 + corner, at = ri * 16, po = (t * 3 + corner) * 3;
+        const x = rd.getFloat32(at, true), y = rd.getFloat32(at + 4, true), z = rd.getFloat32(at + 8, true), fl = rd.getUint32(at + 12, true);
+        if (![x, y, z].every(Number.isFinite) || Math.max(Math.abs(x), Math.abs(y), Math.abs(z)) >= 1.0e7) throw new Error('collision triangle ' + t + ' contains an invalid position');
+        if (!(fl & 0x80) || Boolean(fl & 0x40) !== (corner === 2)) throw new Error('collision triangle ' + t + ' has invalid valid/end flag bits');
+        const faceTag = (fl >>> 16) & 0xffff;
+        if (tag === null) tag = faceTag; else if (tag !== faceTag) throw new Error('collision triangle ' + t + ' has inconsistent per-face material tags');
+        positions[po] = x; positions[po + 1] = y; positions[po + 2] = z; flags[ri] = fl;
+      }
+      tags[t] = tag;
+      const key = '0x' + tag.toString(16).toUpperCase().padStart(4, '0');
+      tagCounts[key] = (tagCounts[key] || 0) + 1;
+    }
+    collision = {records, recordCount, triangleCount, positions, tags, flags, tagCounts,
+      objects: Array.isArray(c.objects) ? c.objects.map(o => ({...o})) : []};
+  }
+
+  return {
+    manifest: {...manifest, name: String(manifest.name || 'Imported level model')},
+    meshes, materials, textures, collision,
+    sourceObjects: Array.isArray(manifest.sourceObjects) ? manifest.sourceObjects.map(o => ({...o})) : []
+  };
+}
+
 function editorPreviewUvs(input) {
   if (!(input instanceof Float32Array || input instanceof Float64Array || Array.isArray(input)) || input.length % 2) {
     throw new TypeError('UV data must be an even-length numeric array');
@@ -221,4 +342,4 @@ function base64ToBytes(s) {
   return out;
 }
 
-export {parseIninjaModelBundle, parseIninjaModelTextures, bytesToBase64, base64ToBytes, crc32, editorPreviewUvs};
+export {parseIninjaModelBundle, parseIninjaLevelBundle, parseIninjaModelTextures, bytesToBase64, base64ToBytes, crc32, editorPreviewUvs};

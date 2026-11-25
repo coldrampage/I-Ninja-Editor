@@ -212,7 +212,7 @@ const NO_MAP_APPEARANCE = /^(?:PopupHelp(?:2|Ninja)?|EnterRegionToActivateStrats
 // children, so suppress only the root appearance and continue spawn traversal.
 const NO_OWN_MODEL = /^(?:GrindRailHelper)$/i;
 function skipSpawnClass(name) {
-  return NO_MAP_APPEARANCE.test(name || '') || /^(?:DWExplode|DWBodyBit)$/i.test(name || '') || /(?:Cutscene|Prompt|Dialog|Explosion|Explode|Flare|Smoke|Particle|Pickup|Debris|Chaser|Teleport|Restart|GeneratorPart|SpawnPickups|ComputerBit|Charging|SnapToParentLaser)/i.test(name || '');
+  return NO_MAP_APPEARANCE.test(name || '') || /^(?:DWExplode|DWBodyBit|KappaBodyBit)$/i.test(name || '') || (!/^FloatingTeleportCamera(?:Body|Arm)$/i.test(name || '') && /(?:Cutscene|Prompt|Dialog|Explosion|Explode|Flare|Smoke|Particle|Pickup|Debris|Chaser|Teleport|Restart|GeneratorPart|SpawnPickups|ComputerBit|Charging|SnapToParentLaser)/i.test(name || ''));
 }
 function noMapAppearance(name) { return NO_MAP_APPEARANCE.test(name || ''); }
 
@@ -233,6 +233,24 @@ function singleVisualGroupForClass(AL, className, displayName) {
   const groups = (AL.modelGroups || []).filter(g => validGroup(g) && g.name === displayName && (g.classes || []).includes(className));
   return groups.length === 1 ? groups[0] : null;
 }
+
+function singleModelGroupByName(AL, displayName) {
+  const groups = (AL.modelGroups || []).filter(g => validGroup(g) && g.name === displayName);
+  return groups.length === 1 ? groups[0] : null;
+}
+
+// The class scripts for these retail props do not expose the intact base model
+// through an entry-time visible setter. The level still contains a unique model
+// descriptor whose name distinguishes the intact object from its breakable
+// fragments; use that descriptor for editor-only static map previews.
+const INTACT_PREVIEW_MODELS = Object.freeze({
+  BarrelOfPickups: 'sap_barrel',
+  BarrelWithMissionGoalPickup: 'sap_barrel',
+  BarrelOfPickupsForest: 'cylwoodbar01',
+  BarrelOfPickupsForest2: 'cylwoodbar01',
+  BarrelWithMissionGoalPickupForest: 'cylwoodbar01',
+  BreakableComputerScreen: 'petescreens01'
+});
 
 export function resolveEntryModelSelection(AL, q, A, options = {}) {
   if (!AL || !q || !A || !Array.isArray(A) && !(A instanceof Uint8Array))
@@ -262,14 +280,29 @@ export function resolveEntryModelSelection(AL, q, A, options = {}) {
     : (NO_OWN_MODEL.test(q.n || '')
       ? { group: null, reason: 'helper-class-no-own-map-model', handled: true }
       : resolveBase(AL, q, A, dv, opts));
-  // In 10-30 the two SneakSentinel map instances differ at init register @7.
-  // Instance #39 has @7=0, which skips the class's only SetModelEx call even
-  // though the user confirms it should be visible like #10. For static map
-  // preview only, reuse the unique class base mesh; keep the script condition
-  // visible in the reason so this remains an explicit, auditable exception.
-  if (!result.group && result.handled && String(opts.wadName || '').toUpperCase().endsWith('10-30.LCS') && q.n === 'SneakSentinel' && Number(q.i) === 39) {
+
+  // Static map previews should represent the intact/default object, not an
+  // unresolved collision-only, broken, or controller-state mesh. These
+  // overrides are visual-only and do not modify the STRAT or game data.
+  const namedIntact = INTACT_PREVIEW_MODELS[q.n];
+  if (!result.group && namedIntact) {
+    const fallback = singleModelGroupByName(AL, namedIntact);
+    if (fallback) result = { group: fallback, reason: 'editor-intact-preview-asset-override', certainty: 'unique-intact-model-descriptor', previewOverride: true };
+  }
+  if (q.n === 'ForestBamboo3') {
+    const fallback = singleVisualGroupForClass(AL, 'ForestBamboo3', 'bamboofull');
+    if (fallback) result = { group: fallback, reason: 'editor-intact-preview-asset-override', certainty: 'unique-intact-class-model', previewOverride: true };
+  }
+  if (q.n === 'CopterRanx' && !result.group) {
+    const fallback = singleVisualGroupForClass(AL, 'CopterRanx', 'Rax Copter');
+    if (fallback) result = { group: fallback, reason: 'editor-static-copter-preview-fallback', certainty: 'unique-class-model-param0-zero', previewOverride: true };
+  }
+  // SneakSentinel's entry model is gated by @7, but several retail level
+  // instances start with @7=0 and are still intended to be visible scenery.
+  // Reuse the unique Toes_Right body mesh wherever that entry branch is skipped.
+  if (!result.group && q.n === 'SneakSentinel') {
     const fallback = singleVisualGroupForClass(AL, 'SneakSentinel', 'Toes_Right');
-    if (fallback) result = { group: fallback, reason: 'user-reported-instance-preview-fallback', certainty: 'instance-override-param7-zero', previewOverride: true };
+    if (fallback) result = { group: fallback, reason: 'editor-sentinel-preview-fallback', certainty: 'unique-class-model-param7-zero', previewOverride: true };
   }
   let group = result.group || null;
   let groupOffset = [0,0,0];

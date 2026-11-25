@@ -1,9 +1,63 @@
 // Project lifecycle: project JSON loading/saving and patched VOL/AVL generation.
 // All mutable editor state and format-specific helpers are supplied by the coordinator.
-import { applyTextureOps } from './texture-tools.js?v=step110-rotation-boundary-fix';
-import { siWad } from './vol-core.js?v=step110-rotation-boundary-fix';
-import { collisionWadSnapshot } from './collision-diagnostics.js?v=step110-rotation-boundary-fix';
+import { applyTextureOps } from './texture-tools.js?v=step146-strat-appearance-preview';
+import { siWad, instances as parseLcsInstances, parseLcm, wadName } from './vol-core.js?v=step146-strat-appearance-preview';
+import { collisionWadSnapshot } from './collision-diagnostics.js?v=step146-strat-appearance-preview';
 import { planTints, applyTintData } from './class-tint.js';
+import {parseIninjaLevelBundle, base64ToBytes} from './custom-models.js?v=step146-strat-appearance-preview';
+import {makeInilevelStratAsset} from './inilevel-strat-adapter.js?v=step146-strat-appearance-preview';
+import {appendInilevelRender, makeEmptyStandaloneLcm, inspectSpatialCellRoot, findLevelDrawQueues} from './native-level-writer.js?v=step146-strat-appearance-preview';
+function inilevelBounds(data) {
+  const bounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
+  let count = 0;
+  const visit = positions => {
+    if (!positions || typeof positions.length !== 'number' || positions.length % 3) return;
+    for (let i = 0; i < positions.length; i += 3) {
+      const x = Number(positions[i]), y = Number(positions[i + 1]), z = Number(positions[i + 2]);
+      if (![x, y, z].every(Number.isFinite)) throw new Error('bundle contains a non-finite position');
+      bounds[0][0] = Math.min(bounds[0][0], x); bounds[0][1] = Math.min(bounds[0][1], y); bounds[0][2] = Math.min(bounds[0][2], z);
+      bounds[1][0] = Math.max(bounds[1][0], x); bounds[1][1] = Math.max(bounds[1][1], y); bounds[1][2] = Math.max(bounds[1][2], z);
+      count++;
+    }
+  };
+  for (const mesh of data.meshes || []) visit(mesh.positions);
+  if (data.collision) visit(data.collision.positions);
+  if (!count) throw new Error('bundle has no positions to place');
+  return {bounds, centre: bounds[0].map((v, k) => (v + bounds[1][k]) * 0.5), count};
+}
+function translateInilevel(data, delta) {
+  const translate = source => {
+    if (!source) return source;
+    const out = new Float32Array(source);
+    for (let i = 0; i < out.length; i += 3) {
+      out[i] += delta[0]; out[i + 1] += delta[1]; out[i + 2] += delta[2];
+    }
+    return out;
+  };
+  return {
+    ...data,
+    meshes: (data.meshes || []).map(mesh => ({...mesh, positions: translate(mesh.positions)})),
+    collision: data.collision ? {...data.collision, positions: translate(data.collision.positions)} : data.collision
+  };
+}
+function placementNearNinjaStart(data, lcsA, lcsB, wadName) {
+  const start = parseLcsInstances(lcsA, lcsB).find(entity => entity.n === 'NinjaStartPoint');
+  if (!start || !Array.isArray(start.p) || !start.p.every(Number.isFinite)) {
+    throw wadName + ': cannot place static level geometry near spawn because the paired LCS has no readable NinjaStartPoint; choose Preserve bundle world coordinates instead';
+  }
+  const q = Array.isArray(start.q) && start.q.length === 4 ? start.q : [0, 0, 0, 1];
+  const qn = Math.hypot(...q) || 1, [qx, qy, qz, qw] = q.map(v => v / qn);
+  const forward = [-2 * (qx * qz + qw * qy), 2 * (qw * qx - qy * qz), -1 + 2 * (qx * qx + qy * qy)];
+  const fn = Math.hypot(...forward) || 1;
+  // Put the centre of the complete render+collision bundle eight units in
+  // front of the spawn and two units above it. The quaternion supplies the
+  // local -Z forward direction, so 10-00's rotated spawn is handled correctly.
+  const target = [start.p[0] + forward[0] / fn * 8, start.p[1] + 2 + forward[1] / fn * 8, start.p[2] + forward[2] / fn * 8];
+  const {centre, bounds} = inilevelBounds(data);
+  const delta = target.map((v, k) => v - centre[k]);
+  return {data: translateInilevel(data, delta), start, bounds, originalCentre: centre, targetCentre: target, delta};
+}
+
 export function installProjectManager({
   Viewer, EC, IA,
   getProject, setProject,
@@ -20,6 +74,7 @@ export function installProjectManager({
     j.models = j.models || {};
     j.scripts = j.scripts || {};
     j.prefabs = Array.isArray(j.prefabs) ? j.prefabs : [];
+    j.levelModels = Array.isArray(j.levelModels) ? j.levelModels : [];
     j.wads = j.wads || {};
     j.textures = j.textures || {};
     j.tints = j.tints || {};
@@ -175,14 +230,15 @@ export function installProjectManager({
 
   $('ed_save').onclick = () => {
     try {
-      if (!isVol()) throw 'load a .vol first';
-      const PRJ = getProject(), wads = withFp();
+      const PRJ = getProject();
+      if (!isVol() && !(PRJ.levelModels || []).length) throw 'load a .vol or import a .inilevel first';
+      const wads = withFp();
       const vv = {...PRJ.vols};
       for (const f of Viewer.files) if (f.vol) vv[f.vol] = f.buf.byteLength;
       PRJ.vols = vv;
       const scr = buildScriptWadsFp();
-      dl([JSON.stringify({app:'ininja-editor', v:1, vols:PRJ.vols, models:PRJ.models || {}, customModels:PRJ.customModels || {}, prefabs:PRJ.prefabs || [], audioAssets:PRJ.audioAssets || {}, wads, scripts:scr, textures:texturesFp(), tints:tintsFp(), display:PRJ.display || {}}, null, 1)], 'ininja-project.json', 'application/json');
-      $('ed_sum').textContent = 'project saved: ' + Object.keys(wads).length + ' level(s) with instance edits, ' + Object.keys(scr).length + ' with code edits, ' + (PRJ.prefabs || []).length + ' prefab favourite(s), ' + Object.values(PRJ.customModels || {}).reduce((n,c)=>n+(c.assets||[]).length,0) + ' imported custom model asset(s) (holds only your edits, no game data)';
+      dl([JSON.stringify({app:'ininja-editor', v:1, vols:PRJ.vols, models:PRJ.models || {}, customModels:PRJ.customModels || {}, levelModels:PRJ.levelModels || [], prefabs:PRJ.prefabs || [], audioAssets:PRJ.audioAssets || {}, wads, scripts:scr, textures:texturesFp(), tints:tintsFp(), display:PRJ.display || {}}, null, 1)], 'ininja-project.json', 'application/json');
+      $('ed_sum').textContent = 'project saved: ' + Object.keys(wads).length + ' level(s) with instance edits, ' + Object.keys(scr).length + ' with code edits, ' + (PRJ.prefabs || []).length + ' prefab favourite(s), ' + Object.values(PRJ.customModels || {}).reduce((n,c)=>n+(c.assets||[]).length,0) + ' imported custom model asset(s), ' + (PRJ.levelModels || []).length + ' imported level-model bundle(s) (build mode, target and preview data saved)';
     } catch (x) {
       $('ed_sum').textContent = 'save failed: ' + x;
     }
@@ -195,16 +251,73 @@ export function installProjectManager({
       const customModelRecords = getProject().customModels || {};
       const customAssets = Object.values(customModelRecords).reduce((n,c)=>n+(c.assets||[]).length,0), customInstances = Object.values(customModelRecords).reduce((n,c)=>n+(c.instances||[]).length,0);
       const customModelWads = Object.keys(customModelRecords).filter(w => (customModelRecords[w].instances || []).length);
-      const names = [...new Set([...Object.keys(wads), ...Object.keys(sc), ...Object.keys(tx), ...Object.keys(tn), ...customModelWads])].filter(w => getWad(w));
-      const pend = [...new Set([...pending(wads), ...Object.keys(sc).filter(w => !getWad(w)).map(w => sc[w].vol || w.split('-')[0] + '.vol'), ...customModelWads.filter(w => !getWad(w)).map(w => w.split('-')[0] + '.vol')])];
-      if (!names.length) throw 'the project has no game-data edits for ' + loadedVols().join(', ') + (customAssets || customInstances ? '. It contains ' + customAssets + ' imported custom model asset(s) and ' + customInstances + ' placed custom model instance(s).' : '') + (pend.length ? ' (it has edits for ' + pend.join(', ') + ': load that volume and build again)' : '');
-      const byVol = {};
+      const levelModelRecords = (getProject().levelModels || []).filter(r => r && typeof r.bundle === 'string' && (r.targetLcm || String(r.standaloneId || '').trim()));
+      for (const r of levelModelRecords) if (r.targetLcm && !/\.LCM$/i.test(r.targetLcm)) throw 'invalid level-model destination: ' + r.targetLcm + ' (choose an LCM chunk)';
+      // STRAT objects remain available as a workaround; native-static now
+      // writes LCM draw parts and registers their bounds in the target spatial cells.
+      const nativeLevelModelRecords = levelModelRecords.filter(r => r.buildMode === 'native-static');
+      const objectLevelModelRecords = levelModelRecords.filter(r => r.buildMode !== 'native-static');
+      const pairedLcs = r => String(r.targetLcm).replace(/\.LCM$/i, '.LCS');
+      const standaloneCandidates = levelModelRecords.filter(r => String(r.standaloneId || '').trim());
+      if (standaloneCandidates.some(r => r.buildMode !== 'native-static')) throw 'a separate streamed chunk can only be built with Static LCM geometry';
+      const standaloneIds = new Set();
+      for (const record of standaloneCandidates) {
+        const id = String(record.standaloneId).trim();
+        if (!/^\d{2}-\d{2}$/.test(id)) throw 'invalid separate chunk ID "' + id + '" (use a two-digit area ID such as 10-98)';
+        if (standaloneIds.has(id.toLowerCase())) throw 'only one .inilevel bundle may target separate chunk ' + id + ' in this prototype';
+        standaloneIds.add(id.toLowerCase());
+        const selectedTarget = String(record.targetLcm || '').trim();
+        const volume = selectedTarget
+          ? (volOf(selectedTarget) || record.targetVol || '')
+          : (record.targetVol || loadedVols().find(v => String(vbase(v)).toLowerCase() === id.slice(0, 2).toLowerCase()) || (id.slice(0, 2) + '.vol'));
+        if (!volume || String(vbase(volume)).toLowerCase() !== id.slice(0, 2).toLowerCase()) throw id + ' must use the same two-digit prefix as its destination VOL (' + (volume || 'unknown volume') + '); choose a matching destination volume or update the chunk ID';
+        if (!loadedVols().some(v => String(vbase(v)).toLowerCase() === String(vbase(volume)).toLowerCase())) throw 'load the source ' + vbase(volume) + '.vol before building standalone chunk ' + id;
+        if (selectedTarget) {
+          if (!getWad(selectedTarget)) throw 'load the template LCM ' + selectedTarget + ' from its source VOL first';
+          const sourceLcs = pairedLcs(record);
+          if (!getWad(sourceLcs)) throw 'load the paired template LCS ' + sourceLcs + ' from the same source VOL first';
+        }
+        const cleanDonorName = String(record.cleanDonorLcm || '').trim();
+        if (cleanDonorName) {
+          const donorFile = (Viewer.files || []).find(f => f && f.name.toLowerCase() === cleanDonorName.toLowerCase() && String(f.vol || '').toLowerCase() === String(volume).toLowerCase());
+          if (!donorFile) throw 'clean donor ' + cleanDonorName + ' must be loaded from the same destination VOL (' + volume + '); it is used only for scaffolding, not cloned as scenery';
+          const donorLcs = cleanDonorName.replace(/\.LCM$/i, '.LCS');
+          if (!getWad(donorLcs)) throw 'load the paired clean-donor LCS ' + donorLcs + ' from ' + volume;
+        }
+        const existingNames = (Viewer.files || []).filter(f => f && f.vol && String(f.vol).toLowerCase() === String(volume).toLowerCase()).map(f => String(f.name).toLowerCase());
+        for (const ext of ['.LCS', '.LCM']) if (existingNames.includes((id + ext).toLowerCase())) throw 'cannot create ' + id + ': ' + id + ext + ' already exists in ' + volume;
+      }
+      const standaloneRecords = standaloneCandidates;
+      const regularNativeLevelModelRecords = nativeLevelModelRecords.filter(r => !String(r.standaloneId || '').trim());
+      const levelModelWads = [...new Set(objectLevelModelRecords.map(pairedLcs))];
+      const nativeLevelModelWads = [...new Set(regularNativeLevelModelRecords.map(r => String(r.targetLcm)))];
+      const missingLevelLcs = levelModelWads.filter(w => !getWad(w));
+      if (missingLevelLcs.length) throw 'load the paired LCS file(s) for the selected object-mode level chunk(s): ' + missingLevelLcs.join(', ');
+      const nativeStartLcsWads = [...new Set(regularNativeLevelModelRecords.filter(r => r.placementMode !== 'world').map(pairedLcs))];
+      const missingNativeStartLcs = nativeStartLcsWads.filter(w => !getWad(w));
+      if (missingNativeStartLcs.length) throw 'load the paired LCS file(s) to place native static geometry near NinjaStartPoint: ' + missingNativeStartLcs.join(', ') + ' (or select Preserve bundle world coordinates)';
+      const missingNativeLcms = nativeLevelModelWads.filter(w => !getWad(w));
+      if (missingNativeLcms.length) throw 'load the source VOL containing these native LCM target(s): ' + missingNativeLcms.join(', ');
+      const names = [...new Set([...Object.keys(wads), ...Object.keys(sc), ...Object.keys(tx), ...Object.keys(tn), ...customModelWads, ...levelModelWads, ...nativeLevelModelWads])].filter(w => getWad(w));
+      const pend = [...new Set([...pending(wads), ...Object.keys(sc).filter(w => !getWad(w)).map(w => sc[w].vol || w.split('-')[0] + '.vol'), ...customModelWads.filter(w => !getWad(w)).map(w => w.split('-')[0] + '.vol'), ...levelModelWads.filter(w => !getWad(w)).map(w => volOf(w) || w.split('-')[0] + '.vol'), ...nativeLevelModelWads.filter(w => !getWad(w)).map(w => volOf(w) || w.split('-')[0] + '.vol')])];
+      if (!names.length && !standaloneRecords.length) {
+        const importedLevelBundles = (getProject().levelModels || []).filter(r => r && typeof r.bundle === 'string').length;
+        throw 'the project has no loaded game-data edits for ' + loadedVols().join(', ') + (importedLevelBundles ? '. It contains ' + importedLevelBundles + ' .inilevel bundle(s); select either the confirmed STRAT-object route or native static-LCM route in the Level Models panel and load the required source files.' : '') + (customAssets || customInstances ? ' It also contains ' + customAssets + ' imported custom model asset(s) and ' + customInstances + ' placed custom model instance(s).' : '') + (pend.length ? ' (it has edits for ' + pend.join(', ') + ': load that volume and build again)' : '');
+      }
+      const byVol = {}, standaloneByVol = {};
       for (const w of names) (byVol[volOf(w)] = byVol[volOf(w)] || []).push(w);
-      const srcWad = n => getWad(n), healed = [], outs = [], texRep = [], tintRep = [], customModelReports = [];
+      for (const record of standaloneRecords) {
+        const id = String(record.standaloneId || '').trim();
+        const desired = record.targetLcm ? (volOf(record.targetLcm) || record.targetVol) : (record.targetVol || (id.slice(0, 2) + '.vol'));
+        const volume = loadedVols().find(v => String(vbase(v)).toLowerCase() === String(vbase(desired)).toLowerCase()) || desired;
+        (standaloneByVol[volume] = standaloneByVol[volume] || []).push(record);
+      }
+      const buildVolumes = [...new Set([...Object.keys(byVol), ...Object.keys(standaloneByVol)])];
+      const srcWad = n => getWad(n), healed = [], outs = [], texRep = [], tintRep = [], customModelReports = [], nativeLevelReports = [], standaloneReports = [];
       let i = 0;
-      for (const V of Object.keys(byVol)) {
-        const rep = {}, plans = {};
-        for (const w of byVol[V]) {
+      for (const V of buildVolumes) {
+        const rep = {}, additions = {}, avlAdditions = {}, plans = {};
+        for (const w of (byVol[V] || [])) {
           $('ed_sum').textContent = 'patching ' + w + ' (' + ++i + '/' + names.length + ')...';
           await new Promise(r => setTimeout(r));
           const f = Viewer.files.find(x => x.name === w);
@@ -212,6 +325,36 @@ export function installProjectManager({
           const g = getWad(w);
           const baseA=g.A,baseB=g.B;
           let A = g.A, B = g.B, tplan = null;
+          // Legacy direct-LCM writer retained for compatibility with old projects.
+          // New builds schedule .inilevel objects against the paired .LCS instead.
+          if (/\.LCM$/i.test(w)) {
+            const assigned = regularNativeLevelModelRecords.filter(r => r.targetLcm.toLowerCase() === w.toLowerCase());
+            if (!assigned.length) throw w + ': an LCM was queued without an native-static .inilevel bundle';
+            let currentA = A, currentB = B;
+            const bundleReports = [];
+            for (const record of assigned) {
+              let data;
+              try { data = parseIninjaLevelBundle(base64ToBytes(record.bundle)); }
+              catch (e) { throw w + ': could not reopen ' + (record.sourceName || record.name || 'the stored .inilevel') + ': ' + (e && e.message || e); }
+              let placementDescription = 'preserve bundle world coordinates';
+              if (record.placementMode !== 'world') {
+                const lcs = getWad(pairedLcs(record));
+                const placed = placementNearNinjaStart(data, lcs.A, lcs.B, w);
+                data = placed.data;
+                placementDescription = 'bundle centre translated to NinjaStartPoint +8 local-forward/+2Y; delta [' + placed.delta.map(v => Number(v.toFixed(3))).join(', ') + ']';
+              }
+              const writerOptions = {forceSingleSided: !!record.nativeSingleSided, untextured: !!record.nativeUntextured, useTemplateTexture: !!record.nativeTemplateTexture, clearTemplateFlag200: !!record.nativeClearTemplateFlag200, clearTemplateFlag20: !!record.nativeClearTemplateFlag20, referenceStaticTemplate: !!record.nativeReferenceStaticTemplate};
+              const built = appendInilevelRender(currentA, currentB, w, data, EC, writerOptions);
+              currentA = built.A; currentB = built.B;
+              const partBoundsSummary = (built.reports || []).map(r => (r.name || 'part') + ' radius ' + Number(r.templateBoundRadius).toFixed(3) + '→' + Number(r.boundRadius).toFixed(3)).join(', ');
+              const visibility = built.visibilityRegistration || {};
+              const visibilitySummary = (visibility.addedDescriptors || 0) + ' visibility descriptor(s) assigned to spatial cells ' + (visibility.assignments || []).map(a => (a.name || 'part') + ': [' + (a.cells || []).join(', ') + ']').join('; ') + '; ' + (visibility.orphanDescriptors ?? 'unknown') + ' orphan descriptor(s)';
+              bundleReports.push((record.name || data.manifest.name || record.sourceName || 'level bundle') + ' (' + placementDescription + (writerOptions.forceSingleSided ? '; single-sided diagnostic' : '') + (writerOptions.untextured ? '; vertex-colour-only diagnostic' : '') + (writerOptions.useTemplateTexture ? '; retail-template-texture control' : '') + (writerOptions.clearTemplateFlag200 ? '; cleared template part flag 0x200 only' : '') + (writerOptions.clearTemplateFlag20 ? '; cleared template part flag 0x20 only' : '') + (writerOptions.referenceStaticTemplate ? '; plain Heart Room Wall static-template diagnostic' : '') + (built.added.singleLayerMaterialStage1Reset ? '; stage 1 COLOROP disabled for single-layer custom textures' : '') + '): ' + built.added.parts + ' native render part(s), ' + built.added.triangles + ' native render triangles (' + built.added.sourceTriangles + ' source' + (built.added.doubleSidedParts ? ', ' + built.added.doubleSidedParts + ' two-sided part(s) expanded for back-face visibility' : '') + '), ' + built.added.textures + ' texture(s), ' + built.resourceDirectory.tex + ' texture and ' + built.resourceDirectory.mesh + ' vertex-buffer directory entries; ' + visibilitySummary + '; ' + built.added.collisionPreserved + ' existing collision triangles/tags/auxiliary flags retained, ' + built.added.collisionSourceTriangles + ' imported source collision faces placed into ' + built.added.collisionTriangles + ' final KD query regions (' + built.added.collisionDuplicatePlacements + ' additional whole-face copies) in a ' + (built.readback.collisionKdNodes || 'existing') + '-node KD tree; linked into opaque draw queue; per-part bounds: ' + partBoundsSummary + (built.placementWarning ? '. PLACEMENT WARNING: ' + built.placementWarning : '') + (built.collisionStructureWarning ? '. COLLISION WARNING: ' + built.collisionStructureWarning : ''));
+            }
+            rep[w] = EC.packWad(hdr, currentA, currentB);
+            nativeLevelReports.push(w + ': ' + bundleReports.join(' | '));
+            continue;
+          }
           // Keep the untouched level's import set so resource-directory repair
           // appends only assets this build introduces. Some original PC levels
           // intentionally omit alternate model resources from the D3D directory.
@@ -229,18 +372,49 @@ export function installProjectManager({
           let r0 = wads[w] ? EC.patchLcs(A, B, wads[w], w, srcWad, {snd:sp, audioAssets:getProject().audioAssets || {}, musicAssets:wads[w] && wads[w].music || {}}) : {A,B};
           const customRec = customModelRecords[w];
           const beforeCustomA=r0.A,beforeCustomB=r0.B;
+          let buildCustomRec = customRec ? {assets:[...(customRec.assets||[])],instances:[...(customRec.instances||[])]} : {assets:[],instances:[]};
+          const assignedLevelModels = objectLevelModelRecords.filter(record => pairedLcs(record).toLowerCase() === w.toLowerCase());
+          const levelObjectDetails = [];
+          for (let li=0;li<assignedLevelModels.length;li++) {
+            const record=assignedLevelModels[li];
+            let data;
+            try { data=parseIninjaLevelBundle(base64ToBytes(record.bundle)); }
+            catch(e) { throw w+': could not reopen '+(record.sourceName||record.name||'the stored .inilevel')+': '+(e&&e.message||e); }
+            const adapted=makeInilevelStratAsset(data,record);
+            const placementMode=record.placementMode==='world'?'world':'start';
+            let position;
+            if (placementMode==='world') position=adapted.anchor.slice();
+            else {
+              const start=parseLcsInstances(A,B).find(entity=>entity.n==='NinjaStartPoint');
+              if(!start||!Array.isArray(start.p)||!start.p.every(Number.isFinite)) throw w+': cannot place '+(record.name||'the level model')+' near spawn because this LCS has no readable NinjaStartPoint; choose Preserve bundle world coordinates instead';
+              // Place the model a few units along the spawn's local -Z axis.
+              // Retail STRAT movement uses local-Z-negative movement; use the
+              // actual NinjaStartPoint quaternion rather than assuming world +Z
+              // is in front of the player (10-00 has a different heading).
+              const q=Array.isArray(start.q)&&start.q.length===4?start.q:[0,0,0,1];
+              const qn=Math.hypot(...q)||1, [qx,qy,qz,qw]=q.map(v=>v/qn);
+              const forward=[-2*(qx*qz+qw*qy),2*(qw*qx-qy*qz),-1+2*(qx*qx+qy*qy)];
+              const fn=Math.hypot(...forward)||1;
+              position=[start.p[0]+forward[0]/fn*4,start.p[1]+2+forward[1]/fn*4,start.p[2]+forward[2]/fn*4];
+            }
+            buildCustomRec.assets.push(adapted.asset);
+            buildCustomRec.instances.push({id:'inilevel_instance_'+String(record.id||li),assetId:adapted.asset.id,name:record.name||data.manifest.name||'Imported level model',position,rotation:[0,0,0],scale:[1,1,1],collisionType:adapted.asset.collisionType});
+            levelObjectDetails.push((record.name||data.manifest.name||record.sourceName||'level model')+' → '+placementMode+' placement at ['+position.map(v=>Number(v.toFixed(2))).join(', ')+'], '+adapted.vertexCount+' vertices, '+Math.floor(adapted.indexCount/3)+' render triangles'+(adapted.twoSided?' (two-sided)':'')+', '+adapted.collisionTriangles+' private CollMesh collision triangles');
+          }
           let afterCustomA=r0.A,afterCustomB=r0.B,hasCustomBuild=false;
-          if (customRec && customRec.instances && customRec.instances.length) {
-            // Custom-model render and STRAT scaffolds are bundled with the editor.
-            // Pass no level-source resolver: importing a model must not depend on
-            // RoboPunchout_Boat, RobotHub_Flap_Flat, or any other map object.
-            const cm = EC.patchCustomModels(r0.A, r0.B, w, customRec, null, []);
+          if (buildCustomRec.instances && buildCustomRec.instances.length) {
+            // Both ordinary .inimodel placements and .inilevel geometry use the
+            // same complete native LCS STRAT render graph. Level collision is
+            // emitted as the object's private CollMesh, not merged into LCM KD.
+            const cm = EC.patchCustomModels(r0.A, r0.B, w, buildCustomRec, null, []);
             r0 = {A:cm.A, B:cm.B};afterCustomA=cm.A;afterCustomB=cm.B;hasCustomBuild=true;
-            customModelReports.push(w + ': ' + cm.added.models + ' native model(s), ' + cm.added.instances + ' STRAT instance(s), ' + cm.added.textures + ' texture(s)' + (cm.templateSource ? ' using STRAT template from ' + cm.templateSource : '') + (cm.templateName ? ', render template ' + cm.templateName : '') + (cm.added.collisions ? ', ' + cm.added.collisions + ' native box collision(s)' + (cm.collisionTemplateSource ? ' using CollMesh from ' + cm.collisionTemplateSource : '') : ''));
+            if (customRec && customRec.instances && customRec.instances.length) customModelReports.push(w + ': ' + customRec.instances.length + ' regular custom model placement(s)');
+            if (assignedLevelModels.length) nativeLevelReports.push(w+': '+levelObjectDetails.join(' | ')+'; registered as native STRAT object(s), not static LCM draw parts');
+            customModelReports.push(w + ': ' + cm.added.models + ' native model(s), ' + cm.added.instances + ' STRAT instance(s), ' + cm.added.textures + ' texture(s)' + (cm.templateSource ? ' using STRAT template from ' + cm.templateSource : '') + (cm.templateName ? ', render template ' + cm.templateName : '') + (cm.added.collisions ? ', ' + cm.added.collisions + ' private CollMesh collision(s)' + (cm.collisionTemplateSource ? ' using CollMesh from ' + cm.collisionTemplateSource : '') : ''));
           }
           if (tx[w]) { const t = applyTextureOps(r0.A, r0.B, tx[w].ops); r0 = {A:t.A, B:t.B}; texRep.push(w + ': ' + t.report.join('; ')); }
           const r = EC.healResDir(r0.A, r0.B, baseResourceFixups);
-          if(hasCustomBuild)recordCollisionDiagnostics(w,V,baseA,baseB,beforeCustomA,beforeCustomB,afterCustomA,afterCustomB,r.A,r.B,customRec);
+          if(hasCustomBuild)recordCollisionDiagnostics(w,V,baseA,baseB,beforeCustomA,beforeCustomB,afterCustomA,afterCustomB,r.A,r.B,buildCustomRec);
           if (r.added.tex || r.added.mesh || (r.removed && (r.removed.tex || r.removed.mesh || r.removed.invalidVertexResources))) healed.push(w + ' (+' + r.added.tex + ' tex, +' + r.added.mesh + ' mesh' + (r.removed && (r.removed.tex || r.removed.mesh || r.removed.invalidVertexResources) ? ', removed ' + r.removed.tex + ' stale tex, ' + r.removed.mesh + ' stale mesh and ' + r.removed.invalidVertexResources + ' malformed vertex resource(s)' : '') + ')');
           if (sp && sp.adds.length) {
             const dh = new DataView(hdr.buffer, hdr.byteOffset);
@@ -249,9 +423,228 @@ export function installProjectManager({
           }
           rep[w] = EC.packWad(hdr, r.A, r.B);
         }
+        // Standalone chunks have two modes:
+        // - selected template: clone that retail LCS/LCM/PCA pair as-is;
+        // - blank template: select a compatible donor automatically, copy its
+        //   LCS/PCA loader scaffolding, but clear its static LCM render/collision
+        //   before appending the imported custom level.
+        for (const record of (standaloneByVol[V] || [])) {
+          const id = String(record.standaloneId).trim(), newLcmName = id + '.LCM', newLcsName = id + '.LCS';
+          const selectedTemplate = String(record.targetLcm || '').trim();
+          const avl = await avlLoad(V);
+          if (!avl || !Array.isArray(avl.list)) throw 'load the paired ' + vbase(V) + '.avl before building standalone chunk ' + id;
+          const newPcaName = id + '.PCA';
+          if (avl.list.some(x => x.name.toLowerCase() === newPcaName.toLowerCase())) throw 'cannot create ' + newPcaName + ': that audio entry already exists in ' + avl.name;
+          const resolvePair = name => {
+            const lcmName = String(name), lcsName = lcmName.replace(/\.LCM$/i, '.LCS');
+            const lcm = getWad(lcmName), lcs = getWad(lcsName);
+            const lcmFile = (Viewer.files || []).find(f => f && f.name.toLowerCase() === lcmName.toLowerCase() && String(f.vol || '').toLowerCase() === String(V).toLowerCase());
+            const lcsFile = (Viewer.files || []).find(f => f && f.name.toLowerCase() === lcsName.toLowerCase() && String(f.vol || '').toLowerCase() === String(V).toLowerCase());
+            return lcm && lcs && lcmFile && lcsFile ? {lcmName, lcsName, lcm, lcs, lcmFile, lcsFile} : null;
+          };
+          let donor = null, emptySeed = null;
+          const requestedCleanDonor = String(record.cleanDonorLcm || '').trim();
+          if (selectedTemplate) {
+            donor = resolvePair(selectedTemplate);
+            if (!donor) throw id + ': could not resolve the selected template LCS/LCM pair inside ' + V;
+          } else {
+            const candidateFiles = requestedCleanDonor
+              ? (Viewer.files || []).filter(f => f && f.name.toLowerCase() === requestedCleanDonor.toLowerCase() && String(f.vol || '').toLowerCase() === String(V).toLowerCase())
+              : (Viewer.files || []).filter(f => f && /\.LCM$/i.test(f.name || '') && String(f.vol || '').toLowerCase() === String(V).toLowerCase());
+            const candidates = candidateFiles
+              .map(f => resolvePair(f.name))
+              .filter(Boolean)
+              .map(pair => {
+                let parsed = null; try { parsed = parseLcm(pair.lcm.A, pair.lcm.B); } catch (_) {}
+                const title = String(wadName(pair.lcmFile.buf, pair.lcmFile) || '').replace(/\0/g, '').trim();
+                let entities = [], entityError = '';
+                try { entities = parseLcsInstances(pair.lcs.A, pair.lcs.B); } catch (error) { entityError = error && error.message || String(error); }
+                const bossClasses = [...new Set(entities.filter(entity => entity && /boss/i.test(entity.n || '')).map(entity => entity.n))];
+                const specialTitle = /\b(boss|hub)\b/i.test(title);
+                const risk = (specialTitle ? 1000 : 0) + bossClasses.length * 100 + (entityError ? 10000 : 0);
+                const rootInfo = inspectSpatialCellRoot(pair.lcm.A, pair.lcm.B, pair.lcmName);
+                let drawQueueInfo = null, drawQueueError = '';
+                try { drawQueueInfo = findLevelDrawQueues(pair.lcm.A, pair.lcm.B, pair.lcmName); } catch (error) { drawQueueError = error && error.message || String(error); }
+                return {...pair, parsed, donorTitle:title, donorEntities:entities, donorRisk:risk, donorSpecialReasons:[...(specialTitle?['special title']:[]), ...(bossClasses.length?['boss classes: '+bossClasses.join(', ')]:[]), ...(entityError?['unreadable LCS: '+entityError]:[])], rootInfo, drawQueueInfo, drawQueueError};
+              })
+              .filter(pair => pair.parsed && pair.parsed.parts > 0)
+              // Runtime-confirmed donors outrank render-part count. These are
+              // grounded in user in-game tests: 30-17 works; 50-00 works while
+              // the formerly-smallest 50-05 donor does not load reliably.
+              .sort((a, b) => {
+                const preferred = {'30.vol':'30-17.LCM','50.vol':'50-00.LCM'}[String(V).toLowerCase()] || '';
+                const ap = a.lcmName.toLowerCase() === preferred.toLowerCase() ? 0 : 1;
+                const bp = b.lcmName.toLowerCase() === preferred.toLowerCase() ? 0 : 1;
+                return ap - bp || a.donorRisk - b.donorRisk || a.parsed.parts - b.parsed.parts || a.lcmName.localeCompare(b.lcmName);
+              });
+            const failures = [];
+            if (requestedCleanDonor && !candidates.length) throw id + ': selected clean donor ' + requestedCleanDonor + ' is not a readable LCS/LCM pair inside ' + V;
+            const viable = candidates.filter(candidate => candidate.rootInfo && candidate.rootInfo.ok && candidate.drawQueueInfo && !candidate.donorSpecialReasons.some(reason => reason.startsWith('unreadable LCS:')));
+            const safeViable = viable.filter(candidate => candidate.donorRisk === 0);
+            const preferredRuntimeDonor = {'30.vol':'30-17.LCM','50.vol':'50-00.LCM'}[String(V).toLowerCase()] || '';
+            const knownRuntimeGood = preferredRuntimeDonor ? viable.find(candidate => candidate.lcmName.toLowerCase() === preferredRuntimeDonor.toLowerCase()) : null;
+            // A confirmed in-game donor is allowed to outrank heuristic risk
+            // labels. This preserves known working 30-17 and 50-00 choices,
+            // while leaving untested candidates under the conservative filter.
+            const orderedCandidates = requestedCleanDonor
+              ? viable
+              : [...(knownRuntimeGood ? [knownRuntimeGood] : []), ...safeViable.filter(candidate => candidate !== knownRuntimeGood)];
+            if (!requestedCleanDonor && !orderedCandidates.length && viable.length) failures.push('all spatially compatible donors appear to be unverified boss/hub streams; choose a Clean donor LCM explicitly to override the safety filter');
+            for (const candidate of orderedCandidates) {
+              const sourceId = candidate.lcsName.replace(/\.LCS$/i, ''), sourcePcaName = sourceId + '.PCA';
+              const pcaEntry = avl.list.find(x => x.name.toLowerCase() === sourcePcaName.toLowerCase());
+              if (!pcaEntry) { failures.push(candidate.lcmName + ': no paired ' + sourcePcaName + ' in ' + avl.name); continue; }
+              if (record.placementMode !== 'world') {
+                const start = candidate.donorEntities.find(entity => entity && entity.n === 'NinjaStartPoint');
+                if (!start || !Array.isArray(start.p) || !start.p.every(Number.isFinite)) { failures.push(candidate.lcmName + ': no readable NinjaStartPoint for spawn-relative placement'); continue; }
+              }
+              try {
+                emptySeed = makeEmptyStandaloneLcm(candidate.lcm.A, candidate.lcm.B, candidate.lcmName, EC);
+                donor = candidate;
+                break;
+              } catch (error) { failures.push(candidate.lcmName + ': ' + (error && error.message || error)); }
+            }
+            if (!donor) {
+              const rejected = candidates.filter(candidate => !candidate.rootInfo?.ok || !candidate.drawQueueInfo || candidate.donorSpecialReasons.some(reason => reason.startsWith('unreadable LCS:'))).map(candidate => candidate.lcmName + ': ' + (!candidate.rootInfo?.ok ? (candidate.rootInfo?.reason || 'unsupported spatial root') : candidate.drawQueueError || candidate.donorSpecialReasons.join(', ') || 'unreadable donor')).slice(0, 8);
+              throw id + ': no compatible automatic donor pair was found in ' + V + (requestedCleanDonor ? ' for selected clean donor ' + requestedCleanDonor : '') + (failures.length || rejected.length ? '. Tried: ' + [...failures, ...rejected].slice(0, 8).join(' | ') : '. Load a normal retail LCS/LCM pair with a matching PCA into the editor first.');
+            }
+          }
+          const sourceId = donor.lcsName.replace(/\.LCS$/i, ''), sourcePcaName = sourceId + '.PCA';
+          const pcaEntry = avl.list.find(x => x.name.toLowerCase() === sourcePcaName.toLowerCase());
+          if (!pcaEntry) throw 'no ' + sourcePcaName + ' in the paired ' + vbase(V) + '.avl; a complete standalone chunk needs its cloned .PCA audio entry too';
+          if (!Number.isInteger(pcaEntry.off) || !Number.isInteger(pcaEntry.size) || pcaEntry.off < 0 || pcaEntry.size <= 0 || pcaEntry.off + pcaEntry.size > avl.buf.byteLength) throw sourcePcaName + ' has an invalid archive range';
+          let data;
+          try { data = parseIninjaLevelBundle(base64ToBytes(record.bundle)); }
+          catch (e) { throw id + ': could not reopen ' + (record.sourceName || record.name || 'the stored .inilevel') + ': ' + (e && e.message || e); }
+          let placementDescription = 'preserve bundle world coordinates';
+          if (record.placementMode !== 'world') {
+            const placed = placementNearNinjaStart(data, donor.lcs.A, donor.lcs.B, donor.lcsName);
+            data = placed.data;
+            placementDescription = 'bundle centre translated to donor NinjaStartPoint +8 local-forward/+2Y; delta [' + placed.delta.map(v => Number(v.toFixed(3))).join(', ') + ']';
+          }
+          const writerOptions = {forceSingleSided: !!record.nativeSingleSided, untextured: !!record.nativeUntextured, useTemplateTexture: !!record.nativeTemplateTexture, clearTemplateFlag200: !!record.nativeClearTemplateFlag200, clearTemplateFlag20: !!record.nativeClearTemplateFlag20, referenceStaticTemplate: !!record.nativeReferenceStaticTemplate};
+          const seedA = emptySeed ? emptySeed.A : donor.lcm.A, seedB = emptySeed ? emptySeed.B : donor.lcm.B;
+          const built = appendInilevelRender(seedA, seedB, donor.lcmName, data, EC, writerOptions);
+          const lcmHeaderSize = new DataView(donor.lcmFile.buf, donor.lcmFile.off, donor.lcmFile.size).getUint32(4, true) + 16;
+          const lcmHeader = new Uint8Array(donor.lcmFile.buf, donor.lcmFile.off, lcmHeaderSize).slice();
+          additions[newLcmName] = EC.packWad(lcmHeader, built.A, built.B);
+          let removedDonorInstances = 0, retainedStartPointCount = 0, copiedHubSkyNames = [], hubSkyLcsName = '';
+          if (selectedTemplate) {
+            additions[newLcsName] = new Uint8Array(donor.lcsFile.buf, donor.lcsFile.off, donor.lcsFile.size).slice();
+          } else {
+            // A clean standalone must not inherit the donor's placed objects,
+            // triggers, enemies, ambience emitters, pickups, or scripted props.
+            // Keep the native NinjaStartPoint as the minimal player-spawn anchor;
+            // keep the source class table/scripts/resources intact as conservative
+            // loader scaffolding until a safe minimal-class format is understood.
+            const donorEntities = parseLcsInstances(donor.lcs.A, donor.lcs.B);
+            // A spawn point is useful but not required to create a clean chunk:
+            // users may copy/place one manually after the archive build. Keep
+            // any donor NinjaStartPoint instances that already exist, but allow
+            // zero (and do not require exactly one).
+            const startEntities = donorEntities.filter(entity => entity && entity.n === 'NinjaStartPoint');
+            retainedStartPointCount = startEntities.length;
+            const removeInstances = donorEntities
+              .filter(entity => !entity || entity.n !== 'NinjaStartPoint')
+              .map(entity => entity && entity.i)
+              .filter(Number.isInteger);
+            removedDonorInstances = removeInstances.length;
+            const cleanOps = {del: removeInstances};
+            let hubSkyWad = null;
+            if (record.copyHubSkyEnvironment) {
+              const volumePrefix = id.slice(0, 2);
+              const requestedSkySource = String(record.skyEnvironmentSourceLcs || '').trim();
+              const sameVolumeLcs = (Viewer.files || []).filter(file => file && /\.LCS$/i.test(file.name || '') && String(file.vol || '').toLowerCase() === String(V).toLowerCase());
+              const inspectSkySource = file => {
+                if (!file) return null;
+                let wad = null, entities = [];
+                try { wad = getWad(file.name); if (!wad) return null; entities = parseLcsInstances(wad.A, wad.B); }
+                catch (_) { return null; }
+                const custom = entities.find(entity => entity && /^CustomSkydome$/i.test(entity.n || ''));
+                const blank = entities.find(entity => entity && /^SkydomeBlank$/i.test(entity.n || ''));
+                const dome = custom || blank;
+                return dome ? {name: file.name, wad, entities, dome, custom: !!custom, fog: entities.filter(entity => entity && /^Fog$/i.test(entity.n || ''))} : null;
+              };
+              let skySource = null;
+              if (requestedSkySource) {
+                const selectedFile = sameVolumeLcs.find(file => file.name.toLowerCase() === requestedSkySource.toLowerCase());
+                if (!selectedFile) throw id + ': selected sky source ' + requestedSkySource + ' is not loaded from destination ' + V + '.';
+                skySource = inspectSkySource(selectedFile);
+                if (!skySource) throw id + ': selected sky source ' + requestedSkySource + ' has no readable CustomSkydome or SkydomeBlank instance.';
+              } else {
+                // Prefer the actual map/hub definition (-00) when present, then
+                // the optional global fallback (-99), then any local map that
+                // already carries the sky. Different volumes do not use one
+                // universal convention for their sky setup.
+                const orderedFiles = [...sameVolumeLcs].sort((a, b) => {
+                  const rank = file => file.name.toLowerCase() === (volumePrefix + '-00.lcs') ? 0 : file.name.toLowerCase() === (volumePrefix + '-99.lcs') ? 1 : 2;
+                  return rank(a) - rank(b) || a.name.localeCompare(b.name);
+                });
+                for (const file of orderedFiles) { skySource = inspectSkySource(file); if (skySource) break; }
+                if (!skySource) throw id + ': no readable CustomSkydome or SkydomeBlank instance was found in any loaded LCS in ' + V + '. Select/load a level LCS that already contains the sky environment.';
+              }
+              hubSkyLcsName = skySource.name;
+              hubSkyWad = skySource.wad;
+              const dome = skySource.dome;
+              const environmentEntities = [dome, ...skySource.fog];
+              const sourceReports = EC.classReports(hubSkyWad.A, hubSkyWad.B);
+              const donorReports = EC.classReports(donor.lcs.A, donor.lcs.B);
+              const classNames = [...new Set(environmentEntities.map(entity => entity.n))];
+              cleanOps.classes = [];
+              for (const className of classNames) {
+                const sourceReport = sourceReports[className];
+                if (!sourceReport || String(sourceReport.fingerprint || '').startsWith('analysis-error:')) throw id + ': could not verify the ' + className + ' class in ' + hubSkyLcsName + '; sky environment copy was stopped rather than risking a mismatched script.';
+                const donorReport = donorReports[className];
+                if (!donorReport) {
+                  cleanOps.classes.push({from: {w: hubSkyLcsName, name: className}, variants: []});
+                } else if (donorReport.fingerprint !== sourceReport.fingerprint) {
+                  // Preserve the donor's existing class and import this source
+                  // implementation under a private alias. The copied instance
+                  // is rebound to that alias by patchLcs, including its own
+                  // class/script/resource closure.
+                  const suffix = hubSkyLcsName.replace(/\.LCS$/i, '').replace(/[^A-Za-z0-9]/g, '_');
+                  const alias = className + '__SkySrc_' + suffix;
+                  cleanOps.classes.push({from: {w: hubSkyLcsName, name: className}, variants: [{name: className, alias}]});
+                }
+              }
+              cleanOps.adds = environmentEntities.map((entity, index) => {
+                if (!Array.isArray(entity.p) || !entity.p.every(Number.isFinite)) throw id + ': ' + hubSkyLcsName + ' contains a ' + entity.n + ' instance without a readable position.';
+                return {id: 'sky-env-' + index, from: {w: hubSkyLcsName, i: entity.i}, p: entity.p, dy: 0};
+              });
+              copiedHubSkyNames = environmentEntities.map(entity => entity.n);
+            }
+            const stripped = EC.patchLcs(
+              donor.lcs.A,
+              donor.lcs.B,
+              cleanOps,
+              donor.lcsName,
+              name => hubSkyWad && String(name).toLowerCase() === hubSkyLcsName.toLowerCase() ? hubSkyWad : null,
+              {}
+            );
+            const readbackEntities = parseLcsInstances(stripped.A, stripped.B);
+            const expectedCounts = new Map();
+            for (const entity of startEntities) expectedCounts.set(entity.n, (expectedCounts.get(entity.n) || 0) + 1);
+            for (const name of copiedHubSkyNames) expectedCounts.set(name, (expectedCounts.get(name) || 0) + 1);
+            const actualCounts = new Map();
+            for (const entity of readbackEntities) if (entity && entity.n) actualCounts.set(entity.n, (actualCounts.get(entity.n) || 0) + 1);
+            if (readbackEntities.length !== startEntities.length + copiedHubSkyNames.length || [...expectedCounts].some(([name, count]) => actualCounts.get(name) !== count)) {
+              throw id + ': clean standalone LCS verification failed after donor stripping' + (copiedHubSkyNames.length ? ' and hub sky import from ' + hubSkyLcsName : '') + '; only NinjaStartPoint and explicitly copied sky environment instances should remain';
+            }
+            const lcsHeaderSize = new DataView(donor.lcsFile.buf, donor.lcsFile.off, donor.lcsFile.size).getUint32(4, true) + 16;
+            if (!Number.isInteger(lcsHeaderSize) || lcsHeaderSize < 16 || lcsHeaderSize > donor.lcsFile.size) throw id + ': donor LCS header is invalid';
+            const lcsHeader = new Uint8Array(donor.lcsFile.buf, donor.lcsFile.off, lcsHeaderSize).slice();
+            additions[newLcsName] = EC.packWad(lcsHeader, stripped.A, stripped.B);
+          }
+          avlAdditions[newPcaName] = new Uint8Array(avl.buf, pcaEntry.off, pcaEntry.size).slice();
+          if (selectedTemplate) {
+            standaloneReports.push(id + ': cloned ' + donor.lcsName + '/' + donor.lcmName + ' as ' + newLcsName + '/' + newLcmName + ' plus ' + newPcaName + '; appended ' + built.added.parts + ' render part(s), ' + built.added.triangles + ' render triangle(s), ' + built.added.collisionSourceTriangles + ' source collision face(s) routed into ' + built.added.collisionTriangles + ' final KD region placement(s); ' + placementDescription + '. Template STRATs, scenery and existing collision are copied as-is.');
+          } else {
+            standaloneReports.push(id + ': created clean custom-only LCM from ' + (requestedCleanDonor ? 'selected clean donor ' : 'automatic safe donor ') + donor.lcmName + (donor.donorTitle ? ' [' + donor.donorTitle + ']' : '') + ' (donor used only for loader/render scaffolding; neutralised ' + emptySeed.report.neutralisedParts + ' draw parts and cleared ' + emptySeed.report.originalCollisionTriangles + ' donor collision triangles); rebuilt ' + newLcsName + ' from donor ' + donor.lcsName + ' with ' + retainedStartPointCount + ' NinjaStartPoint instance(s) retained (' + removedDonorInstances + ' other donor STRAT instances removed; zero spawn points is allowed and one can be copied in manually; donor class definitions/scripts/resources retained as loader scaffolding)' + (copiedHubSkyNames.length ? '; copied hub sky environment [' + copiedHubSkyNames.join(', ') + '] from ' + hubSkyLcsName : '') + '; cloned paired ' + sourcePcaName + ' as ' + newPcaName + '; appended ' + built.added.parts + ' custom render part(s), ' + built.added.triangles + ' render triangle(s), ' + built.added.collisionSourceTriangles + ' source collision face(s) routed into ' + built.added.collisionTriangles + ' final KD region placement(s); ' + placementDescription + '.');
+          }
+        }
         // Rebuild copied sound PCA blocks, then lay this volume's AVL out again.
         let ap = null, avlOut = '';
-        if (Object.keys(plans).length) {
+        if (Object.keys(plans).length || Object.keys(avlAdditions).length) {
           const pn = n => n.replace(/\.LCS$/i, '.PCA');
           const pcaNames = new Set(Object.keys(plans));
           for (const w in plans) for (const a of plans[w].adds) if (a.w) pcaNames.add(a.w);
@@ -272,11 +665,12 @@ export function installProjectManager({
           for (const w in plans) rep2[pn(w)] = EC.buildPca(pcaOf(w).pca, plans[w], sw => pcaOf(sw));
           // Reload the target .avl if the LRU evicted it while collecting source PCAs.
           const A = await avlLoad(V);
-          ap = EC.rebuildVol(A.buf, rep2);
+          ap = Object.keys(avlAdditions).length ? EC.rebuildVolWithAdditions(A.buf, rep2, avlAdditions) : EC.rebuildVol(A.buf, rep2);
           avlOut = A.name.replace(/\.avl$/i, '') + '.patched.avl';
         }
         const vf = Viewer.files.find(x => x.vol === V);
-        outs.push({V, parts:EC.rebuildVol(vf.buf, rep), out:V.replace(/\.vol$/i, '') + '.patched.vol', ap, avlOut, A:ap && getAvl(V).name, n:byVol[V]});
+        const volumeParts = Object.keys(additions).length ? EC.rebuildVolWithAdditions(vf.buf, rep, additions) : EC.rebuildVol(vf.buf, rep);
+        outs.push({V, parts:volumeParts, out:V.replace(/\.vol$/i, '') + '.patched.vol', ap, avlOut, A:ap && getAvl(V).name, n:byVol[V] || []});
       }
       // Space downloads so browsers do not drop multiple file downloads.
       let k = 0;
@@ -284,12 +678,14 @@ export function installProjectManager({
         setTimeout(() => dl(o.parts, o.out, 'application/octet-stream'), 600*k++);
         if (o.ap) setTimeout(() => dl(o.ap, o.avlOut, 'application/octet-stream'), 600*k++);
       }
-      $('ed_sum').textContent = 'built ' + outs.map(o => o.out + (o.ap ? ' + ' + o.avlOut : '')).join(', ') + ' (' + names.join(', ') + '). Back up your originals, then replace each with its patched file (rename it to the original name).' +
+      $('ed_sum').textContent = 'built ' + outs.map(o => o.out + (o.ap ? ' + ' + o.avlOut : '')).join(', ') + ' (' + [...names, ...standaloneRecords.flatMap(r => [String(r.standaloneId).trim() + '.LCS', String(r.standaloneId).trim() + '.LCM'])].join(', ') + '). Back up your originals, then replace each with its patched file (rename it to the original name).' +
         (outs.some(o => o.ap) ? ' Sounds were copied, so a patched .avl was built for ' + outs.filter(o => o.ap).map(o => o.V).join(', ') + ': install it together with its .vol.' : '') +
         (healed.length ? ' Added missing entries to the level resource directory: ' + healed.join(', ') + '.' : '') +
         (texRep.length ? ' Textures: ' + texRep.join(' | ') + '.' : '') +
         (tintRep.length ? ' Colour tints: ' + tintRep.join(' | ') + '.' : '') +
         (customModelReports.length ? ' Custom models: ' + customModelReports.join(' | ') + '.' : '') +
+        (nativeLevelReports.length ? ' Native level build: ' + nativeLevelReports.join(' | ') + '.' : '') +
+        (standaloneReports.length ? ' Separate streamed chunk prototype: ' + standaloneReports.join(' | ') + ' The original template pair remains unchanged. A StreamNextArea/transition reference to the new ID is still a separate step; this build does not create a portal, world-map entry or prove in-game streaming.' : '') +
         (customAssets && !customInstances ? ' The project also contains ' + customAssets + ' imported custom model asset(s); place an instance in the Models panel to include one in the game build.' : '') +
         (pend.length ? ' Still to build: ' + pend.join(', ') + ' (load it, open the same project, build).' : '');
     } catch (x) {

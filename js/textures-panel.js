@@ -1,7 +1,7 @@
 // Textures panel: browse a level wad's textures, export one as PNG, replace it with your own image, or add a brand-new texture.
 // Edits are stored in the project as base64 TGA (your pixels only) under project.textures[wad].ops and applied by "build patched .vol".
-import { listTextures, listMaterialResources, encodeTga, isPow2 } from './texture-tools.js?v=step110-rotation-boundary-fix';
-import { parseTga, setTexOverride, clearTexOverrides, setTexMode, clearTexModes } from './vol-core.js?v=step110-rotation-boundary-fix';
+import { listTextures, listMaterialResources, encodeTga, isPow2 } from './texture-tools.js?v=step146-strat-appearance-preview';
+import { parseTga, setTexOverride, clearTexOverrides, setTexMode, clearTexModes } from './vol-core.js?v=step146-strat-appearance-preview';
 
 export function installTexturePanel({ Viewer, getProject, getWad, onChange = () => {} }) {
   const $ = id => document.getElementById(id);
@@ -102,7 +102,7 @@ export function installTexturePanel({ Viewer, getProject, getWad, onChange = () 
           'Texture ' + hex(layer.textureOffset) + (layer.textureValid ? '' : ' (not a kind-1 texture)') + '\n' +
           'U ' + axisModeName(layer.uMode) + ' · value ' + ftxt(layer.uVelocity) + ' · frequency ' + ftxt(layer.uFrequency) + ' rad/s · phase ' + ftxt(layer.uOffset) + '\n' +
           'V ' + axisModeName(layer.vMode) + ' · value ' + ftxt(layer.vVelocity) + ' · frequency ' + ftxt(layer.vFrequency) + ' rad/s · phase ' + ftxt(layer.vOffset) + '\n' +
-          'RGBA [' + color + '] · rotation rate ' + ftxt(layer.rotationVelocity) + ' · rotation phase ' + ftxt(layer.rotationOffset) + '\n' +
+          'RGBA [' + color + '] · rotation rate ' + ftxt(layer.rotationVelocity) + ' rad/s · rotation phase ' + ftxt(layer.rotationOffset) + ' rad\n' +
           'mode word ' + hex(layer.modeRaw) + ' · raw +0x24 ' + hex(layer.value24Raw) + ' · raw +0x28 ' + hex(layer.value28Raw) + '\n' +
           'Raw 16 words: ' + layer.rawWords.map(hex).join(' ');
         detail.style.whiteSpace = 'pre-wrap'; detail.style.overflowWrap = 'anywhere'; row.appendChild(detail); host.appendChild(row);

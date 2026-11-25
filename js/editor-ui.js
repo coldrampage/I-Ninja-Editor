@@ -2,16 +2,17 @@
 // Parser, editor, assembler, and viewer APIs are imported directly.
 import {
   parseVol, readWad, r2, siWad, instances, fixups
-} from './vol-core.js?v=step110-rotation-boundary-fix';
-import { EC } from './editor-core.js?v=step110-rotation-boundary-fix';
+} from './vol-core.js?v=step146-strat-appearance-preview';
+import { EC } from './editor-core.js?v=step146-strat-appearance-preview';
 import { IA } from './strat-assembler.js';
-import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step110-rotation-boundary-fix';
-import { installModelEditor } from './models-panel.js?v=step110-rotation-boundary-fix';
+import { Viewer, setTriggerOverlayRender, setPathOverlayRender } from './viewer.js?v=step146-strat-appearance-preview';
+import { installModelEditor } from './models-panel.js?v=step146-strat-appearance-preview';
+import { installLevelModelPanel } from './level-models.js?v=step146-strat-appearance-preview';
 import { installScriptEditor } from './script-editor.js';
-import { installTexturePanel } from './textures-panel.js?v=step110-rotation-boundary-fix';
+import { installTexturePanel } from './textures-panel.js?v=step146-strat-appearance-preview';
 import { installTintUi } from './class-tint.js';
-import { installProjectManager } from './project-manager.js?v=step110-rotation-boundary-fix';
-import { installEntityEditor } from './entity-editor.js?v=step110-rotation-boundary-fix';
+import { installProjectManager } from './project-manager.js?v=step146-strat-appearance-preview';
+import { installEntityEditor } from './entity-editor.js?v=step146-strat-appearance-preview';
 import { installPrefabManager } from './prefabs.js?v=step39-enemy-generator-links';
 
 // Shared viewer state is accessed only through the imported Viewer API. No viewer
@@ -20,7 +21,7 @@ import { installPrefabManager } from './prefabs.js?v=step39-enemy-generator-link
 
 // ---- editor UI: edits live in a project (json); the game files are never modified, a patched copy is built on demand
 (()=>{
-let PRJ={app:'ininja-editor',v:1,vol:null,wads:{},prefabs:[]},volName='vol',AVLS={},WC={},inR=0;
+let PRJ={app:'ininja-editor',v:1,vol:null,wads:{},prefabs:[],levelModels:[]},volName='vol',AVLS={},WC={},inR=0;
 // Full .avl archives are a RAM-only working cache. Keep it bounded; individual
 // PCA streams needed for a build are copied into a short-lived build-local map.
 const AVL_CACHE_LIMIT=192*1024*1024;let avlCacheBytes=0,avlClock=0;
@@ -273,7 +274,9 @@ buildScriptWadsFp=installScriptEditor({Viewer,IA,EC,getWad,wadOf,isVol,volOf,get
 
 // Project open/save and VOL/AVL patching are handled by their own module.
 const texturePanel=installTexturePanel({Viewer,getProject:()=>PRJ,getWad,onChange:()=>{resetModelCaches();try{Viewer.refresh()}catch(e){console.error(e)}}});
-const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setProject:j=>{PRJ=j},isVol,getWad,volOf,getVolName:()=>volName,loadedVols,buildScriptWadsFp,sndPlan,avlLoad,avlOk,vbase,getAvl:v=>AVLS[vbase(v)],sourceClass:prefabManager.sourceClass,unzero,onProjectLoaded:()=>{prefabManager.renderFavorites(false);texturePanel.syncAll()}});
+const levelModelPanel=installLevelModelPanel({Viewer,THREE:globalThis.THREE,getProject:()=>PRJ,setProject:j=>{PRJ=j}});
+levelModelPanel.syncFromProject();
+const projectManager=installProjectManager({Viewer,EC,IA,getProject:()=>PRJ,setProject:j=>{PRJ=j},isVol,getWad,volOf,getVolName:()=>volName,loadedVols,buildScriptWadsFp,sndPlan,avlLoad,avlOk,vbase,getAvl:v=>AVLS[vbase(v)],sourceClass:prefabManager.sourceClass,unzero,onProjectLoaded:()=>{prefabManager.renderFavorites(false);texturePanel.syncAll();levelModelPanel.syncFromProject()}});
 
 const entityEditor=installEntityEditor({
   Viewer,EC,getProject:()=>PRJ,wadOf,getWad,WS,base,put,unzero,srcEnt,

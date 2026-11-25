@@ -19,9 +19,10 @@ function finite(value, fallback = 0) {
 //   mode 0: phase + velocity * time
 //   mode 1: phase + sin(frequency * time) * amplitude
 //   mode 2: phase + cos(frequency * time) * amplitude
-// The native builds a texture transform around the UV centre (0.5, 0.5);
-// these values are the equivalent THREE.Texture.offset translations, so the
-// centre compensation is already removed. Unknown modes are held at phase.
+// The native builds a texture transform around the UV centre (0.5, 0.5).
+// Translation uses THREE.Texture.offset; rotation is kept as radians and is
+// applied through THREE.Texture.rotation with center=(0.5, 0.5). Unknown axis
+// modes are held at their phase.
 function axisOffset(mode, amplitude, frequency, phase, seconds) {
   const a = finite(amplitude), f = finite(frequency), p = finite(phase);
   switch (Math.floor(finite(mode, -1))) {
@@ -39,4 +40,13 @@ export function previewUvOffset(layer, elapsedMs) {
     axisOffset(data.uMode, data.uVelocity, data.uFrequency, data.uOffset, seconds),
     axisOffset(data.vMode, data.vVelocity, data.vFrequency, data.vOffset, seconds)
   ];
+}
+
+// Kind-7 rotation velocity/offset are radians and radians per second in the
+// native layered-material record. Keep the unwrapped angle: THREE's texture
+// transform is periodic, and avoiding modulo here preserves exact phase data.
+export function previewUvRotation(layer, elapsedMs) {
+  const seconds = Math.max(0, finite(elapsedMs)) / 1000;
+  const data = layer && typeof layer === 'object' ? layer : {};
+  return finite(data.rotationOffset) + finite(data.rotationVelocity) * seconds;
 }

@@ -1,7 +1,7 @@
 // Local, no-upload collision diagnostics for custom-model builds.
 // All inputs are the LCS byte arrays already held by the editor; this module
 // never writes back to the game archives.
-import {siWad, SiAn, fixups, siClass} from './vol-core.js?v=step110-rotation-boundary-fix';
+import {siWad, SiAn, fixups, siClass} from './vol-core.js?v=step146-strat-appearance-preview';
 
 const hx = n => Number.isInteger(n) ? '0x' + (n >>> 0).toString(16).padStart(8, '0') : null;
 const short = n => Number.isInteger(n) ? '0x' + (n >>> 0).toString(16) : null;
